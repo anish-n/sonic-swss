@@ -3,7 +3,6 @@ import time
 import re
 import json
 
-
 class BaseTestAcl(object):
     """ base class with helpers for Test classes """
     def setup_db(self, dvs):
