@@ -10,6 +10,7 @@
 #include "ipaddresses.h"
 #include "ipprefix.h"
 #include "nexthopgroupkey.h"
+#include "fgnhgorch.h"
 
 #include <map>
 
@@ -57,7 +58,7 @@ struct NextHopObserverEntry
 class RouteOrch : public Orch, public Subject
 {
 public:
-    RouteOrch(DBConnector *db, string tableName, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch);
+    RouteOrch(DBConnector *db, string tableName, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch, FgNhgOrch *fgNhgOrch);
 
     bool hasNextHopGroup(const NextHopGroupKey&) const;
     sai_object_id_t getNextHopGroupId(const NextHopGroupKey&);
@@ -80,6 +81,7 @@ private:
     NeighOrch *m_neighOrch;
     IntfsOrch *m_intfsOrch;
     VRFOrch *m_vrfOrch;
+    FgNhgOrch *m_fgNhgOrch;
 
     int m_nextHopGroupCount;
     int m_maxNextHopGroupCount;
