@@ -327,6 +327,11 @@ bool RouteOrch::validnexthopinNextHopGroup(const NextHopKey &nexthop)
         nhopgroup->second.nhopgroup_members[nexthop] = nexthop_id;
     }
 
+    if(!m_fgNhgOrch->validnexthopinNextHopGroup(nexthop))
+    {
+        return false;
+    }
+
     return true;
 }
 
@@ -357,6 +362,11 @@ bool RouteOrch::invalidnexthopinNextHopGroup(const NextHopKey &nexthop)
         }
 
         gCrmOrch->decCrmResUsedCounter(CrmResourceType::CRM_NEXTHOP_GROUP_MEMBER);
+    }
+
+    if(!m_fgNhgOrch->invalidnexthopinNextHopGroup(nexthop))
+    {
+        return false;
     }
 
     return true;
