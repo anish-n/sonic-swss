@@ -77,6 +77,12 @@ public:
     bool invalidnexthopinNextHopGroup(const NextHopKey&);
 
     void notifyNextHopChangeObservers(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&, bool);
+    const RouteTables& getSyncdRoutes(void)
+    {
+    	return m_syncdRoutes;
+    }
+    bool addRoute(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&);
+    bool removeRoute(sai_object_id_t, const IpPrefix&);
 private:
     NeighOrch *m_neighOrch;
     IntfsOrch *m_intfsOrch;
@@ -93,8 +99,6 @@ private:
     NextHopObserverTable m_nextHopObservers;
 
     void addTempRoute(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&);
-    bool addRoute(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&);
-    bool removeRoute(sai_object_id_t, const IpPrefix&);
 
     std::string getLinkLocalEui64Addr(void);
     void        addLinkLocalRouteToMe(sai_object_id_t vrf_id, IpPrefix linklocal_prefix);
