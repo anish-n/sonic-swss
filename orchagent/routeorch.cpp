@@ -944,7 +944,8 @@ bool RouteOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
 {
     SWSS_LOG_ENTER();
 
-    if(m_fgNhgOrch->fgNhgPrefixes.find(ipPrefix) != m_fgNhgOrch->fgNhgPrefixes.end()){
+    if(m_fgNhgOrch->fgNhgPrefixes.find(ipPrefix) != m_fgNhgOrch->fgNhgPrefixes.end()
+            && vrf_id == gVirtualRouterId){
         SWSS_LOG_INFO("Reroute %s:%s to fgNhgOrch", ipPrefix.to_string().c_str(), 
                 nextHops.to_string().c_str());
         return m_fgNhgOrch->addRoute(vrf_id, ipPrefix, nextHops);
@@ -1125,7 +1126,8 @@ bool RouteOrch::removeRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix)
 {
     SWSS_LOG_ENTER();
 
-    if(m_fgNhgOrch->fgNhgPrefixes.find(ipPrefix) != m_fgNhgOrch->fgNhgPrefixes.end()){
+    if(m_fgNhgOrch->fgNhgPrefixes.find(ipPrefix) != m_fgNhgOrch->fgNhgPrefixes.end()
+            && vrf_id == gVirtualRouterId){
         SWSS_LOG_INFO("Reroute %s to fgNhgOrch", ipPrefix.to_string().c_str());
         return m_fgNhgOrch->removeRoute(vrf_id, ipPrefix);
     }
