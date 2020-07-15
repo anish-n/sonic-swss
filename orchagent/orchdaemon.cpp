@@ -135,7 +135,7 @@ bool OrchDaemon::init()
     };
 
 
-    gFgNhgOrch = new FgNhgOrch(m_configDb, fgnhg_tables, gNeighOrch, gIntfsOrch, vrf_orch);
+    gFgNhgOrch = new FgNhgOrch(m_configDb, m_stateDb, fgnhg_tables, gNeighOrch, gIntfsOrch, vrf_orch);
     gDirectory.set(gFgNhgOrch);
     gRouteOrch = new RouteOrch(m_applDb, APP_ROUTE_TABLE_NAME, gNeighOrch, gIntfsOrch, vrf_orch, gFgNhgOrch);
 
