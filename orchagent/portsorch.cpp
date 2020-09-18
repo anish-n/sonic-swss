@@ -1687,8 +1687,7 @@ void PortsOrch::deInitPort(string alias, sai_object_id_t port_id)
     port_stat_manager.clearCounterIdList(p.m_port_id);
 
     /* remove port name map from counter table */
-    RedisClient redisClient(m_counter_db.get());
-    redisClient.hdel(COUNTERS_PORT_NAME_MAP, alias);
+    m_counter_db->hdel(COUNTERS_PORT_NAME_MAP, alias);
 
     SWSS_LOG_NOTICE("De-Initialized port %s", alias.c_str());
 }
