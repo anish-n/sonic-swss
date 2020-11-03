@@ -176,6 +176,8 @@ bool FgNhgOrch::validnexthopinNextHopGroup(const NextHopKey& nexthop)
             }
 
             m_neighOrch->increaseNextHopRefCount(nexthop);
+            SWSS_LOG_INFO("FG nh %s for prefix %s is down",
+                    nexthop.to_string().c_str(), route_table.first.to_string().c_str());
         }
     }
 
@@ -237,6 +239,8 @@ bool FgNhgOrch::invalidnexthopinNextHopGroup(const NextHopKey& nexthop)
             }
 
             m_neighOrch->decreaseNextHopRefCount(nexthop);
+            SWSS_LOG_INFO("FG nh %s for prefix %s is down",
+                    nexthop.to_string().c_str(), route_table.first.to_string().c_str());
         }
     }
 
@@ -525,7 +529,8 @@ bool FgNhgOrch::set_inactive_bank_to_next_available_active_bank(FGNextHopGroupEn
 
     if(new_bank_idx == bank_member_changes.size())
     {
-        SWSS_LOG_NOTICE("No active next-hop members were found in any bank");
+        SWSS_LOG_NOTICE("All banks of FG next-hops are down for prefix %s",
+                ipPrefix.to_string().c_str());
         /* Case where there are no active banks */
         /* Note: There is no way to set a NULL OID to the now inactive next-hops
          * so we leave the next-hops as is in SAI, and future route/neighbor changes
@@ -564,6 +569,8 @@ bool FgNhgOrch::set_inactive_bank_hash_bucket_changes(FGNextHopGroupEntry *syncd
             syncd_fg_route_entry->active_nexthops.insert(bank_nh_memb);
         }
         syncd_fg_route_entry->inactive_to_active_map[bank] = bank;
+        SWSS_LOG_NOTICE("Bank# %d of FG next-hops is up for prefix %s", bank,
+                ipPrefix.to_string().c_str());
     }
     else if(bank_member_changes[bank].nhs_to_del.size() > 0)
     {
@@ -579,6 +586,8 @@ bool FgNhgOrch::set_inactive_bank_hash_bucket_changes(FGNextHopGroupEntry *syncd
         {
             syncd_fg_route_entry->active_nexthops.erase(memb);
         }
+        SWSS_LOG_NOTICE("Bank# %d of FG next-hops is down for prefix %s", bank,
+                ipPrefix.to_string().c_str());
     }
     else
     {
@@ -668,6 +677,9 @@ bool FgNhgOrch::set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, F
                     break;
                 }
             }
+
+            SWSS_LOG_NOTICE("Bank# %d of FG next-hops is down for prefix %s", i,
+                    ipPrefix.to_string().c_str());
         } 
 
         if(bank_member_changes[bank].nhs_to_add.size() == 0)
@@ -959,11 +971,15 @@ bool FgNhgOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
         for(auto nh : bank_member_changes[bank_idx].nhs_to_add)
         {
             m_neighOrch->increaseNextHopRefCount(nh);
+            SWSS_LOG_INFO("FG nh %s for prefix %s is up",
+                    nh.to_string().c_str(), ipPrefix.to_string().c_str());
         }
 
         for(auto nh : bank_member_changes[bank_idx].nhs_to_del)
         {
             m_neighOrch->decreaseNextHopRefCount(nh);
+            SWSS_LOG_INFO("FG nh %s for prefix %s is down",
+                    nh.to_string().c_str(), ipPrefix.to_string().c_str());
         }
     }
 
@@ -1030,6 +1046,9 @@ bool FgNhgOrch::removeRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix)
     m_stateWarmRestartRouteTable.del(ipPrefix.to_string());
 
     it_route_table->second.erase(it_route);
+    SWSS_LOG_NOTICE("All banks of FG next-hops are down for prefix %s",
+            ipPrefix.to_string().c_str());
+
     return true;
 }
 
