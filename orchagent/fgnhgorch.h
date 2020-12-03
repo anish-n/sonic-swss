@@ -70,16 +70,21 @@ typedef struct
     std::vector<NextHopKey> active_nhs;
 } Bank_Member_Changes;
 
+typedef std::vector<string> NextHopIndexMap;
+
 class FgNhgOrch : public Orch
 {
 public:
     FgNhgPrefixes fgNhgPrefixes;
-    FgNhgOrch(DBConnector *db, DBConnector *stateDb, vector<string> &tableNames, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch);
+    FgNhgOrch(DBConnector *db, DBConnector *stateDb, vector<table_name_with_pri_t> &tableNames, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch);
 
     bool addRoute(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&);
     bool removeRoute(sai_object_id_t, const IpPrefix&);
     bool validnexthopinNextHopGroup(const NextHopKey&);
     bool invalidnexthopinNextHopGroup(const NextHopKey&);
+
+    // warm reboot support
+    bool bake() override;
 
 private:
     NeighOrch *m_neighOrch;
@@ -88,6 +93,10 @@ private:
     FgNhgs m_FgNhgs;
     FGRouteTables m_syncdFGRouteTables;
     Table m_stateWarmRestartRouteTable;
+
+    // warm reboot support for recovery
+    // < ip_prefix, < ip_next_hop, HashBuckets>>
+    map<string, NextHopIndexMap> m_recoveryMap;
 
     bool set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                     std::vector<Bank_Member_Changes> &bank_member_changes, 
@@ -106,6 +115,7 @@ private:
                         std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
     bool remove_nhg(FGNextHopGroupEntry *syncd_fg_route_entry, FgNhgEntry *fgNhgEntry);
     void set_state_db_route_entry(const IpPrefix&, uint32_t index, NextHopKey nextHop);
+    void remove_state_db_route_entry(const std::string& name);
     bool write_hash_bucket_change_to_sai(FGNextHopGroupEntry *syncd_fg_route_entry, uint32_t index, sai_object_id_t nh_oid,
             const IpPrefix &ipPrefix, NextHopKey nextHop);
 

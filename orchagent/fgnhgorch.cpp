@@ -6,6 +6,7 @@
 #include "swssnet.h"
 #include "crmorch.h"
 #include <array>
+#include <algorithm>
 
 extern sai_object_id_t gVirtualRouterId;
 extern sai_object_id_t gSwitchId;
@@ -15,10 +16,8 @@ extern sai_route_api_t*             sai_route_api;
 
 extern RouteOrch *gRouteOrch;
 extern CrmOrch *gCrmOrch;
-int fgnhgorch_pri = 5;
 
-
-FgNhgOrch::FgNhgOrch(DBConnector *db, DBConnector *stateDb, vector<string> &tableNames, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch) :
+FgNhgOrch::FgNhgOrch(DBConnector *db, DBConnector *stateDb, vector<table_name_with_pri_t> &tableNames, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch) :
         Orch(db, tableNames),
         m_neighOrch(neighOrch),
         m_intfsOrch(intfsOrch),
@@ -26,6 +25,42 @@ FgNhgOrch::FgNhgOrch(DBConnector *db, DBConnector *stateDb, vector<string> &tabl
 		m_stateWarmRestartRouteTable(stateDb, STATE_FG_ROUTE_TABLE_NAME)
 {
      SWSS_LOG_ENTER();
+}
+
+bool FgNhgOrch::bake()
+{
+    SWSS_LOG_ENTER();
+
+    deque<KeyOpFieldsValuesTuple> entries;
+    vector<string> keys;
+    m_stateWarmRestartRouteTable.getKeys(keys);
+
+    SWSS_LOG_NOTICE("Warm reboot: recovering entry %lu from state", keys.size());
+
+    for (const auto &key : keys)
+    {
+        vector<FieldValueTuple> tuples;
+        m_stateWarmRestartRouteTable.get(key, tuples);
+
+        NextHopIndexMap nhop_index_map(tuples.size(), std::string());
+        for (const auto &tuple : tuples)
+        {
+            const auto index = stoi(fvField(tuple));
+            const auto nextHop = fvValue(tuple);
+            SWSS_LOG_INFO("Found next hop %s with index %d before warm reboot",
+                    nextHop.c_str(), index);
+
+            nhop_index_map[index] = nextHop;
+            SWSS_LOG_INFO("Storing next hop %s", nhop_index_map[index].c_str());
+        }
+
+        // Recover nexthop with index relationship
+        m_recoveryMap[key] = nhop_index_map;
+
+        remove_state_db_route_entry(key);
+    }
+
+    return Orch::bake();
 }
 
 void calculate_bank_hash_bucket_start_indices(FgNhgEntry *fgNhgEntry)
@@ -74,11 +109,19 @@ void calculate_bank_hash_bucket_start_indices(FgNhgEntry *fgNhgEntry)
     }
 }
 
+void FgNhgOrch::remove_state_db_route_entry(const string& ipPrefix)
+{
+	SWSS_LOG_ENTER();
+
+	m_stateWarmRestartRouteTable.del(ipPrefix);
+}
 
 void FgNhgOrch::set_state_db_route_entry(const IpPrefix &ipPrefix, uint32_t index, NextHopKey nextHop)
 {
     SWSS_LOG_ENTER();
 
+    SWSS_LOG_INFO("Enter set state db entry for ip prefix %s next hop %s with index %d",
+                                    ipPrefix.to_string().c_str(), nextHop.to_string().c_str(), index);
     string key = ipPrefix.to_string();
     // Write to StateDb
     std::vector<FieldValueTuple> fvs;
@@ -94,6 +137,7 @@ void FgNhgOrch::set_state_db_route_entry(const IpPrefix &ipPrefix, uint32_t inde
         SWSS_LOG_INFO("Set state db entry for ip prefix %s next hop %s with index %d",
                         ipPrefix.to_string().c_str(), nextHop.to_string().c_str(), index);
         m_stateWarmRestartRouteTable.set(key, fvs);
+
     }
     else
     {
@@ -286,6 +330,7 @@ bool FgNhgOrch::set_active_bank_hash_bucket_changes(FGNextHopGroupEntry *syncd_f
     SWSS_LOG_ENTER();
 
     Bank_Member_Changes bank_member_change = bank_member_changes[bank];
+
     uint32_t add_idx = 0, del_idx = 0;
     FGNextHopGroupMap *bank_fgnhg_map = &(syncd_fg_route_entry->syncd_fgnhg_map[syncd_bank]);
 
@@ -656,6 +701,8 @@ bool FgNhgOrch::set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, F
     SWSS_LOG_ENTER();
 
     sai_status_t status;
+    bool is_warm_reboot = false;
+    auto nexthopsMap = m_recoveryMap.find(ipPrefix.to_string());
     for(uint32_t i = 0; i < fgNhgEntry->hash_bucket_indices.size(); i++) 
     {
         uint32_t bank = i;
@@ -689,11 +736,26 @@ bool FgNhgOrch::set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, F
             return false;
         }
 
+        // recover state before warm reboot
+        if (nexthopsMap != m_recoveryMap.end())
+        {
+            is_warm_reboot = true;
+        }
+
         for(uint32_t j = fgNhgEntry->hash_bucket_indices[i].start_index;
                 j <= fgNhgEntry->hash_bucket_indices[i].end_index; j++)
         {
-            NextHopKey bank_nh_memb = bank_member_changes[bank].nhs_to_add[j % 
-                bank_member_changes[bank].nhs_to_add.size()];
+            NextHopKey bank_nh_memb;
+            if (is_warm_reboot)
+            {
+                bank_nh_memb = nexthopsMap->second[j];
+                SWSS_LOG_NOTICE("Recovering nexthop %s with bucket %d", bank_nh_memb.ip_address.to_string().c_str(), j);
+            }
+            else
+            {
+                bank_nh_memb = bank_member_changes[bank].nhs_to_add[j %
+                    bank_member_changes[bank].nhs_to_add.size()];
+            }
 
             // Create a next hop group member
             sai_attribute_t nhgm_attr;
@@ -712,20 +774,21 @@ bool FgNhgOrch::set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, F
 
             sai_object_id_t next_hop_group_member_id;
             status = sai_next_hop_group_api->create_next_hop_group_member(
-                                                              &next_hop_group_member_id,
-                                                              gSwitchId,
-                                                              (uint32_t)nhgm_attrs.size(),
-                                                              nhgm_attrs.data());
+                                                            &next_hop_group_member_id,
+                                                            gSwitchId,
+                                                            (uint32_t)nhgm_attrs.size(),
+                                                            nhgm_attrs.data());
+
             if (status != SAI_STATUS_SUCCESS)
             {
                 SWSS_LOG_ERROR("Failed to create next hop group %" PRIx64 " member %" PRIx64 ": %d\n",
-                   syncd_fg_route_entry.next_hop_group_id, next_hop_group_member_id, status);
-                
+                     syncd_fg_route_entry.next_hop_group_id, next_hop_group_member_id, status);
+
                 if(!remove_nhg(&syncd_fg_route_entry, fgNhgEntry))
                 {
                     SWSS_LOG_ERROR("Failed to clean-up after next-hop member creation failure");
                 }
-                
+
                 return false;
             }
 
@@ -737,9 +800,13 @@ bool FgNhgOrch::set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, F
         }
     }
 
+    if (is_warm_reboot)
+    {
+        m_recoveryMap.erase(nexthopsMap);
+    }
+
     return true;
 }
-
 
 bool FgNhgOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const NextHopGroupKey &nextHops)
 {
@@ -1176,6 +1243,7 @@ bool FgNhgOrch::doTaskFgNhg_prefix(const KeyOpFieldsValuesTuple & t)
             else
             {
                 /* ipprefix already exist in routeorch */
+                SWSS_LOG_INFO("Find entry in route table, vrf_id 0x%lx\n", vrf_id);
                 auto it_route = route_table_entry->second.find(ip_prefix);
                 if (it_route != route_table_entry->second.end())
                 {
@@ -1357,6 +1425,7 @@ bool FgNhgOrch::doTaskFgNhg_member(const KeyOpFieldsValuesTuple & t)
 
 void FgNhgOrch::doTask(Consumer& consumer) {
     SWSS_LOG_ENTER();
+
     const string & table_name = consumer.getTableName();
     auto it = consumer.m_toSync.begin();
     bool entry_handled = true;
