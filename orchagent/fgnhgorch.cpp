@@ -749,7 +749,12 @@ bool FgNhgOrch::set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, F
             if (is_warm_reboot)
             {
                 bank_nh_memb = nexthopsMap->second[j];
-                SWSS_LOG_NOTICE("Recovering nexthop %s with bucket %d", bank_nh_memb.ip_address.to_string().c_str(), j);
+                SWSS_LOG_INFO("Recovering nexthop %s with bucket %d", bank_nh_memb.ip_address.to_string().c_str(), j);
+                // case nhps in bank are all down
+                if (fgNhgEntry->nextHops[bank_nh_memb.ip_address] != i)
+                {
+                	syncd_fg_route_entry.inactive_to_active_map[i] = fgNhgEntry->nextHops[bank_nh_memb.ip_address];
+                }
             }
             else
             {
