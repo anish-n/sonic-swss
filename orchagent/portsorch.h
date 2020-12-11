@@ -36,6 +36,13 @@ struct PortUpdate
     bool add;
 };
 
+
+struct PortOperStateUpdate
+{
+    Port port;
+    sai_port_oper_status_t operStatus;
+};
+
 struct LagMemberUpdate
 {
     Port lag;

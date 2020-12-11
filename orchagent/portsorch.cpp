@@ -3650,6 +3650,9 @@ void PortsOrch::updatePortOperStatus(Port &port, sai_port_oper_status_t status)
     {
         SWSS_LOG_WARN("Inform nexthop operation failed for interface %s", port.m_alias.c_str());
     }
+
+    PortOperStateUpdate update = {port, status};
+    notify(SUBJECT_TYPE_PORT_OPER_STATE_CHANGE, static_cast<void *>(&update));
 }
 
 /*
