@@ -71,6 +71,7 @@ typedef struct
 } Bank_Member_Changes;
 
 typedef std::vector<string> NextHopIndexMap;
+typedef map<string, NextHopIndexMap> WarmBootRecoveryMap;
 
 class FgNhgOrch : public Orch
 {
@@ -95,8 +96,8 @@ private:
     Table m_stateWarmRestartRouteTable;
 
     // warm reboot support for recovery
-    // < ip_prefix, < ip_next_hop, HashBuckets>>
-    map<string, NextHopIndexMap> m_recoveryMap;
+    // < ip_prefix, < HashBuckets, nh_ip>>
+    WarmBootRecoveryMap m_recoveryMap;
 
     bool set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                     std::vector<Bank_Member_Changes> &bank_member_changes, 

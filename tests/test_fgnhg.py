@@ -78,7 +78,6 @@ def shutdown_link(dvs, db, port):
 
     assert oper_status == "down"
 
-
 def startup_link(dvs, db, port):
     dvs.servers[port].runcmd("ip link set up dev eth0") == 0
 
@@ -98,6 +97,19 @@ def startup_link(dvs, db, port):
 
     assert oper_status == "up"
 
+def run_warm_reboot(dvs):
+    dvs.runcmd("config warm_restart enable swss")
+
+    # Stop swss before modifing the configDB
+    dvs.stop_swss()
+
+    # start to apply new port_config.ini
+    dvs.start_swss()
+    dvs.runcmd(['sh', '-c', 'supervisorctl start neighsyncd'])
+    dvs.runcmd(['sh', '-c', 'supervisorctl start restore_neighbors'])
+
+    # Enabling some extra logging for validating the order of orchagent
+    dvs.runcmd("swssloglevel -l INFO -c orchagent")
 
 # Get state db route entry
 def swss_get_route_entry_state(state_db,nh_memb_exp_count):
@@ -349,6 +361,37 @@ class TestFineGrainedNextHopGroup(object):
         nh__exp_count = {"10.0.0.7@Ethernet12":20, "10.0.0.9@Ethernet16":20,"10.0.0.11@Ethernet20":20}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
+        run_warm_reboot(dvs)
+
+        # assert the route points to next hop group
+        (status, fvs) = rtbl.get(k)
+
+        for v in fvs:
+            if v[0] == "SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID":
+                nhgid = v[1]
+
+        (status, fvs) = nhgtbl.get(nhgid)
+        assert status
+
+        keys = nhg_member_tbl.getKeys()
+        assert len(keys) == bucket_size
+
+        # Obtain oids of NEXT_HOP asic entries
+        nh_oid_map = {}
+
+        for tbs in nbtbl.getKeys():
+            (status, fvs) = nbtbl.get(tbs)
+            assert status == True
+            for fv in fvs:
+                if fv[0] == "SAI_NEXT_HOP_ATTR_IP":
+                    nh_oid_map[tbs] = fv[1]
+
+        nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
+        verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
+        nh__exp_count = {"10.0.0.7@Ethernet12":20, "10.0.0.9@Ethernet16":20,"10.0.0.11@Ethernet20":20}
+        swss_get_route_entry_state(state_db, nh__exp_count)
+
+
         # Bring up bank 0 next-hops in route for the 1st time
         fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Ethernet0,Ethernet4,Ethernet8,Ethernet12,Ethernet16,Ethernet20")])
         ps.set(fg_nhg_prefix, fvs)
@@ -415,20 +458,7 @@ class TestFineGrainedNextHopGroup(object):
         #                        swss Warm-Restart Testing Begin                    #
         #                                                                           #
         #############################################################################
-        dvs.runcmd("config warm_restart enable swss")
-
-        # Stop swss before modifing the configDB
-        dvs.stop_swss()
-        time.sleep(1)
-
-        # start to apply new port_config.ini
-        dvs.start_swss()
-        dvs.runcmd(['sh', '-c', 'supervisorctl start neighsyncd'])
-        dvs.runcmd(['sh', '-c', 'supervisorctl start restore_neighbors'])
-        
-        # Enabling some extra logging for validating the order of orchagent
-        dvs.runcmd("swssloglevel -l INFO -c orchagent")
-        time.sleep(5)
+        run_warm_reboot(dvs)
 
         # assert the route points to next hop group
         (status, fvs) = rtbl.get(k)
