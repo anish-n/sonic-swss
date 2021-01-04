@@ -30,6 +30,7 @@ FdbOrch *gFdbOrch;
 IntfsOrch *gIntfsOrch;
 NeighOrch *gNeighOrch;
 RouteOrch *gRouteOrch;
+FgNhgOrch *gFgNhgOrch;
 AclOrch *gAclOrch;
 CrmOrch *gCrmOrch;
 BufferOrch *gBufferOrch;
@@ -120,7 +121,18 @@ bool OrchDaemon::init()
 
     gIntfsOrch = new IntfsOrch(m_applDb, APP_INTF_TABLE_NAME, vrf_orch);
     gNeighOrch = new NeighOrch(m_applDb, APP_NEIGH_TABLE_NAME, gIntfsOrch);
-    gRouteOrch = new RouteOrch(m_applDb, APP_ROUTE_TABLE_NAME, gSwitchOrch, gNeighOrch, gIntfsOrch, vrf_orch);
+
+    const int fgnhgorch_pri = 15;
+
+    vector<table_name_with_pri_t> fgnhg_tables = {
+        { CFG_FG_NHG,                 fgnhgorch_pri },
+        { CFG_FG_NHG_PREFIX,          fgnhgorch_pri },
+        { CFG_FG_NHG_MEMBER,          fgnhgorch_pri }
+    };
+
+    gFgNhgOrch = new FgNhgOrch(m_configDb, m_stateDb, fgnhg_tables, gNeighOrch, gIntfsOrch, vrf_orch);
+    gDirectory.set(gFgNhgOrch);
+    gRouteOrch = new RouteOrch(m_applDb, APP_ROUTE_TABLE_NAME, gNeighOrch, gIntfsOrch, vrf_orch, gFgNhgOrch);
 
     TableConnector confDbSflowTable(m_configDb, CFG_SFLOW_TABLE_NAME);
     TableConnector appCoppTable(m_applDb, APP_COPP_TABLE_NAME);
@@ -273,6 +285,7 @@ bool OrchDaemon::init()
     m_orchList.push_back(vnet_orch);
     m_orchList.push_back(vnet_rt_orch);
     m_orchList.push_back(gNatOrch);
+    m_orchList.push_back(gFgNhgOrch);
 
     m_select = new Select();
 

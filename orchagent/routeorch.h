@@ -11,6 +11,7 @@
 #include "ipaddresses.h"
 #include "ipprefix.h"
 #include "nexthopgroupkey.h"
+#include "fgnhgorch.h"
 
 #include <map>
 
@@ -58,7 +59,7 @@ struct NextHopObserverEntry
 class RouteOrch : public Orch, public Subject
 {
 public:
-    RouteOrch(DBConnector *db, string tableName, SwitchOrch *switchOrch, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch);
+    RouteOrch(DBConnector *db, string tableName, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch, FgNhgOrch *fgNhgOrch);
 
     bool hasNextHopGroup(const NextHopGroupKey&) const;
     sai_object_id_t getNextHopGroupId(const NextHopGroupKey&);
@@ -77,11 +78,39 @@ public:
     bool invalidnexthopinNextHopGroup(const NextHopKey&);
 
     void notifyNextHopChangeObservers(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&, bool);
+    const RouteTables& getSyncdRoutes(void)
+    {
+    	return m_syncdRoutes;
+    }
+
+    int getNextHopGroupCount(void)
+    {
+    	return m_nextHopGroupCount;
+    }
+
+    void incNextHopGroupCount(void)
+    {
+        m_nextHopGroupCount++;
+    }
+
+    void decNextHopGroupCount(void)
+    {
+        m_nextHopGroupCount--;
+    }
+
+    int getMaxNextHopGroupCount(void)
+    {
+    	return m_maxNextHopGroupCount;
+    } 
+
+    bool addRoute(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&);
+    bool removeRoute(sai_object_id_t, const IpPrefix&);
 private:
     SwitchOrch *m_switchOrch;
     NeighOrch *m_neighOrch;
     IntfsOrch *m_intfsOrch;
     VRFOrch *m_vrfOrch;
+    FgNhgOrch *m_fgNhgOrch;
 
     int m_nextHopGroupCount;
     int m_maxNextHopGroupCount;
@@ -93,8 +122,6 @@ private:
     NextHopObserverTable m_nextHopObservers;
 
     void addTempRoute(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&);
-    bool addRoute(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&);
-    bool removeRoute(sai_object_id_t, const IpPrefix&);
 
     std::string getLinkLocalEui64Addr(void);
     void        addLinkLocalRouteToMe(sai_object_id_t vrf_id, IpPrefix linklocal_prefix);

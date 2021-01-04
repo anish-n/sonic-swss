@@ -21,12 +21,13 @@ extern CrmOrch *gCrmOrch;
 
 const int routeorch_pri = 5;
 
-RouteOrch::RouteOrch(DBConnector *db, string tableName, SwitchOrch *switchOrch, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch) :
+RouteOrch::RouteOrch(DBConnector *db, string tableName, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch, FgNhgOrch *fgNhgOrch) :
         Orch(db, tableName, routeorch_pri),
         m_switchOrch(switchOrch),
         m_neighOrch(neighOrch),
         m_intfsOrch(intfsOrch),
         m_vrfOrch(vrfOrch),
+        m_fgNhgOrch(fgNhgOrch),
         m_nextHopGroupCount(0),
         m_resync(false)
 {
@@ -331,6 +332,11 @@ bool RouteOrch::validnexthopinNextHopGroup(const NextHopKey &nexthop)
         nhopgroup->second.nhopgroup_members[nexthop] = nexthop_id;
     }
 
+    if(!m_fgNhgOrch->validnexthopinNextHopGroup(nexthop))
+    {
+        return false;
+    }
+
     return true;
 }
 
@@ -361,6 +367,11 @@ bool RouteOrch::invalidnexthopinNextHopGroup(const NextHopKey &nexthop)
         }
 
         gCrmOrch->decCrmResUsedCounter(CrmResourceType::CRM_NEXTHOP_GROUP_MEMBER);
+    }
+
+    if(!m_fgNhgOrch->invalidnexthopinNextHopGroup(nexthop))
+    {
+        return false;
     }
 
     return true;
@@ -938,6 +949,13 @@ bool RouteOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
 {
     SWSS_LOG_ENTER();
 
+    if(m_fgNhgOrch->fgNhgPrefixes.find(ipPrefix) != m_fgNhgOrch->fgNhgPrefixes.end()
+            && vrf_id == gVirtualRouterId){
+        SWSS_LOG_INFO("Reroute %s:%s to fgNhgOrch", ipPrefix.to_string().c_str(), 
+                nextHops.to_string().c_str());
+        return m_fgNhgOrch->addRoute(vrf_id, ipPrefix, nextHops);
+    }
+
     /* next_hop_id indicates the next hop id or next hop group id of this route */
     sai_object_id_t next_hop_id;
 
@@ -1112,6 +1130,12 @@ bool RouteOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
 bool RouteOrch::removeRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix)
 {
     SWSS_LOG_ENTER();
+
+    if(m_fgNhgOrch->fgNhgPrefixes.find(ipPrefix) != m_fgNhgOrch->fgNhgPrefixes.end()
+            && vrf_id == gVirtualRouterId){
+        SWSS_LOG_INFO("Reroute %s to fgNhgOrch", ipPrefix.to_string().c_str());
+        return m_fgNhgOrch->removeRoute(vrf_id, ipPrefix);
+    }
 
     auto it_route_table = m_syncdRoutes.find(vrf_id);
     if (it_route_table == m_syncdRoutes.end())
