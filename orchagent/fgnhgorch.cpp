@@ -8,6 +8,9 @@
 #include <array>
 #include <algorithm>
 
+#define LINK_DOWN    0
+#define LINK_UP      1
+
 extern sai_object_id_t gVirtualRouterId;
 extern sai_object_id_t gSwitchId;
 
@@ -16,6 +19,7 @@ extern sai_route_api_t*             sai_route_api;
 
 extern RouteOrch *gRouteOrch;
 extern CrmOrch *gCrmOrch;
+extern PortsOrch *gPortsOrch;
 
 FgNhgOrch::FgNhgOrch(DBConnector *db, DBConnector *stateDb, vector<table_name_with_pri_t> &tableNames, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch) :
         Orch(db, tableNames),
@@ -24,7 +28,81 @@ FgNhgOrch::FgNhgOrch(DBConnector *db, DBConnector *stateDb, vector<table_name_wi
         m_vrfOrch(vrfOrch),
 		m_stateWarmRestartRouteTable(stateDb, STATE_FG_ROUTE_TABLE_NAME)
 {
-     SWSS_LOG_ENTER();
+    SWSS_LOG_ENTER();
+    gPortsOrch->attach(this);
+}
+
+
+void FgNhgOrch::update(SubjectType type, void *cntx)
+{
+    SWSS_LOG_ENTER();
+    assert(cntx);
+
+    switch(type) {
+        case SUBJECT_TYPE_PORT_OPER_STATE_CHANGE:
+        {
+            PortOperStateUpdate *update = reinterpret_cast<PortOperStateUpdate *>(cntx);
+            for (auto &fgNhgEntry : m_FgNhgs)
+            {
+                auto entry = fgNhgEntry.second.links.find(update->port.m_alias);
+                if (entry != fgNhgEntry.second.links.end())
+                {
+                    for (auto ip : entry->second)
+                    {
+                        NextHopKey nhk;
+                        MacAddress macAddress;
+                        auto nexthop_entry = fgNhgEntry.second.next_hops.find(ip);
+
+                        if (update->operStatus == SAI_PORT_OPER_STATUS_UP)
+                        {
+                            if (nexthop_entry == fgNhgEntry.second.next_hops.end())
+                            {
+                                SWSS_LOG_WARN("Hit unexpected condition where structs are out of sync");
+                            }
+                            nexthop_entry->second.link_oper_state = LINK_UP;
+                            SWSS_LOG_INFO("Updated %s assoicated with %s to state up",
+                                    update->port.m_alias.c_str(), ip.to_string().c_str());
+
+                            if (!m_neighOrch->getNeighborEntry(ip, nhk, macAddress))
+                            {
+                                continue;
+                            }
+ 
+                            if (!validnexthopinNextHopGroup(nhk))
+                            {
+                                SWSS_LOG_WARN("Failed validNextHopInNextHopGroup for nh %s ip %s",
+                                        nhk.to_string().c_str(), ip.to_string().c_str());
+                            }
+                        }
+                        else if (update->operStatus == SAI_PORT_OPER_STATUS_DOWN)
+                        {
+                            if (nexthop_entry == fgNhgEntry.second.next_hops.end())
+                            {
+                                SWSS_LOG_WARN("Hit unexpected condition where structs are out of sync");
+                            }
+                            nexthop_entry->second.link_oper_state = LINK_DOWN;
+                            SWSS_LOG_INFO("Updated %s associated with %s to state down",
+                                    update->port.m_alias.c_str(), ip.to_string().c_str());
+
+                            if (!m_neighOrch->getNeighborEntry(ip, nhk, macAddress))
+                            {
+                                continue;
+                            }
+
+                            if (!invalidnexthopinNextHopGroup(nhk))
+                            {
+                                SWSS_LOG_WARN("Failed validNextHopInNextHopGroup for nh %s ip %s",
+                                        nhk.to_string().c_str(), ip.to_string().c_str());
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
 }
 
 bool FgNhgOrch::bake()
@@ -63,23 +141,32 @@ bool FgNhgOrch::bake()
     return Orch::bake();
 }
 
+
+/* calculateBankHashBucketStartIndices: generates the hash_bucket_indices for all banks
+ * and stores it in fgNhgEntry for the group. 
+ * The function will identify the # of next-hops assigned to each bank and 
+ * assign the total number of hash buckets for a bank, based on the proportional
+ * number of next-hops in the bank. 
+ * eg: Bank0: 6 nh, Bank1: 3 nh, total buckets: 30 => 
+ *      calculateBankHashBucketStartIndices: Bank0: Bucket# 0-19, Bank1: Bucket# 20-29
+ */
 void calculate_bank_hash_bucket_start_indices(FgNhgEntry *fgNhgEntry)
 {
     SWSS_LOG_ENTER();
     uint32_t num_banks = 0;
     vector<uint32_t> memb_per_bank;
-    for(auto nh : fgNhgEntry->nextHops)
+    for (auto nh : fgNhgEntry->next_hops)
     {
-        while (nh.second + 1 > num_banks)
+        while (nh.second.bank + 1 > num_banks)
         {
             num_banks++;
             memb_per_bank.push_back(0);
         }
-        memb_per_bank[nh.second] = memb_per_bank[nh.second] + 1;
+        memb_per_bank[nh.second.bank] = memb_per_bank[nh.second.bank] + 1;
     }
 
-    uint32_t buckets_per_nexthop = fgNhgEntry->real_bucket_size/((uint32_t)fgNhgEntry->nextHops.size());
-    uint32_t extra_buckets = fgNhgEntry->real_bucket_size - (buckets_per_nexthop*((uint32_t)fgNhgEntry->nextHops.size()));
+    uint32_t buckets_per_nexthop = fgNhgEntry->real_bucket_size/((uint32_t)fgNhgEntry->next_hops.size());
+    uint32_t extra_buckets = fgNhgEntry->real_bucket_size - (buckets_per_nexthop*((uint32_t)fgNhgEntry->next_hops.size()));
     uint32_t split_extra_buckets_among_bank = extra_buckets/num_banks;
     extra_buckets = extra_buckets - (split_extra_buckets_among_bank*num_banks);
 
@@ -203,11 +290,11 @@ bool FgNhgOrch::validnexthopinNextHopGroup(const NextHopKey& nexthop)
 
             for( auto active_nh : syncd_fg_route_entry->active_nexthops)
             {
-                bank_member_changes[fgNhgEntry->nextHops[active_nh.ip_address]].
+                bank_member_changes[fgNhgEntry->next_hops[active_nh.ip_address].bank].
                     active_nhs.push_back(active_nh);
             }
 
-            bank_member_changes[fgNhgEntry->nextHops[nexthop.ip_address]].
+            bank_member_changes[fgNhgEntry->next_hops[nexthop.ip_address].bank].
                     nhs_to_add.push_back(nexthop);
             nhopgroup_members_set[nexthop] = m_neighOrch->getNextHopId(nexthop);
 
@@ -265,13 +352,13 @@ bool FgNhgOrch::invalidnexthopinNextHopGroup(const NextHopKey& nexthop)
                     continue;
                 }
 
-                bank_member_changes[fgNhgEntry->nextHops[active_nh.ip_address]].
+                bank_member_changes[fgNhgEntry->next_hops[active_nh.ip_address].bank].
                     active_nhs.push_back(active_nh);
 
                 nhopgroup_members_set[active_nh] = m_neighOrch->getNextHopId(active_nh);
             }
 
-            bank_member_changes[fgNhgEntry->nextHops[nexthop.ip_address]].
+            bank_member_changes[fgNhgEntry->next_hops[nexthop.ip_address].bank].
                     nhs_to_del.push_back(nexthop);
 
             if(!compute_and_set_hash_bucket_changes(syncd_fg_route_entry, fgNhgEntry, 
@@ -751,9 +838,9 @@ bool FgNhgOrch::set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, F
                 bank_nh_memb = nexthopsMap->second[j];
                 SWSS_LOG_INFO("Recovering nexthop %s with bucket %d", bank_nh_memb.ip_address.to_string().c_str(), j);
                 // case nhps in bank are all down
-                if (fgNhgEntry->nextHops[bank_nh_memb.ip_address] != i)
+                if (fgNhgEntry->next_hops[bank_nh_memb.ip_address].bank != i)
                 {
-                	syncd_fg_route_entry.inactive_to_active_map[i] = fgNhgEntry->nextHops[bank_nh_memb.ip_address];
+                    syncd_fg_route_entry.inactive_to_active_map[i] = fgNhgEntry->next_hops[bank_nh_memb.ip_address].bank;
                 }
             }
             else
@@ -846,9 +933,9 @@ bool FgNhgOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
     {
         /* Only happens the 1st time when hash_bucket_indices are not inited
          */
-        for(auto it : fgNhgEntry->nextHops)
+        for (auto it : fgNhgEntry->next_hops)
         {
-            while(bank_member_changes.size() <= it.second)
+            while(bank_member_changes.size() <= it.second.bank)
             {
                 bank_member_changes.push_back(Bank_Member_Changes());
             }
@@ -859,16 +946,24 @@ bool FgNhgOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
      * and add the corresponding next_hop_id to next_hop_ids. */
     for (NextHopKey nhk : next_hop_set)
     {
+        auto nexthop_entry = fgNhgEntry->next_hops.find(nhk.ip_address);
         if (!m_neighOrch->hasNextHop(nhk))
         {
             SWSS_LOG_NOTICE("Failed to get next hop %s:%s in neighorch",
                     nhk.to_string().c_str(), nextHops.to_string().c_str());
             continue;
         }
-        else if(fgNhgEntry->nextHops.find(nhk.ip_address) == fgNhgEntry->nextHops.end())
+        else if (nexthop_entry == fgNhgEntry->next_hops.end())
         {
             SWSS_LOG_WARN("Could not find next-hop %s in Fine Grained next-hop group entry for prefix %s, skipping",
                     nhk.to_string().c_str(), fgNhgEntry->fgNhg_name.c_str());
+            continue;
+        }
+        else if (!(nexthop_entry->second.link.empty()) &&
+                nexthop_entry->second.link_oper_state == LINK_DOWN)
+        {
+            SWSS_LOG_NOTICE("Tracked link %s associated with nh %s is down",
+                    nexthop_entry->second.link.c_str(), nhk.to_string().c_str());
             continue;
         }
         else if (m_neighOrch->isNextHopFlagSet(nhk, NHFLAGS_IFDOWN))
@@ -880,7 +975,7 @@ bool FgNhgOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
 
         if(syncd_fg_route_entry_it == m_syncdFGRouteTables.at(vrf_id).end())
         {
-            bank_member_changes[fgNhgEntry->nextHops[nhk.ip_address]].
+            bank_member_changes[fgNhgEntry->next_hops[nhk.ip_address].bank].
                 nhs_to_add.push_back(nhk);
             next_hop_to_add = true;
         }
@@ -890,7 +985,7 @@ bool FgNhgOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
             if(syncd_fg_route_entry->active_nexthops.find(nhk) == 
                 syncd_fg_route_entry->active_nexthops.end())
             {
-                bank_member_changes[fgNhgEntry->nextHops[nhk.ip_address]].
+                bank_member_changes[fgNhgEntry->next_hops[nhk.ip_address].bank].
                     nhs_to_add.push_back(nhk);
             }
         }
@@ -908,12 +1003,12 @@ bool FgNhgOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
         {
             if(nhopgroup_members_set.find(nhk) == nhopgroup_members_set.end())
             {
-                bank_member_changes[fgNhgEntry->nextHops[nhk.ip_address]].
+                bank_member_changes[fgNhgEntry->next_hops[nhk.ip_address].bank].
                     nhs_to_del.push_back(nhk);
             }
             else
             {
-                bank_member_changes[fgNhgEntry->nextHops[nhk.ip_address]].
+                bank_member_changes[fgNhgEntry->next_hops[nhk.ip_address].bank].
                     active_nhs.push_back(nhk);
             }
         }
@@ -1125,6 +1220,30 @@ bool FgNhgOrch::removeRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix)
 }
 
 
+void FgNhgOrch::cleanupIpInLinkToIpMap(const string &link, const IpAddress &ip, FgNhgEntry &fgNhg_entry)
+{
+    SWSS_LOG_ENTER();
+    if (!link.empty())
+    {
+        auto link_entry = fgNhg_entry.links.find(link);
+        if (link_entry == fgNhg_entry.links.end())
+        {
+            SWSS_LOG_WARN("Unexpected case where structs are out of sync for %s",
+                    link.c_str());
+            return;
+        } 
+        for (auto ip_it = begin(link_entry->second); ip_it != end(link_entry->second); ip_it++)
+        {
+            if (*ip_it == ip)
+            {
+                fgNhg_entry.links[link].erase(ip_it);
+                break;
+            }
+        }
+    }
+}
+
+
 bool FgNhgOrch::doTaskFgNhg(const KeyOpFieldsValuesTuple & t)
 {
     SWSS_LOG_ENTER();
@@ -1180,7 +1299,7 @@ bool FgNhgOrch::doTaskFgNhg(const KeyOpFieldsValuesTuple & t)
         else 
         {
             /* delete all associated FG_NHG and SAI objects */
-            if (fgNhg_entry->second.prefixes.size() == 0 && fgNhg_entry->second.nextHops.size() == 0)
+            if (fgNhg_entry->second.prefixes.size() == 0 && fgNhg_entry->second.next_hops.size() == 0)
             {
                 m_FgNhgs.erase(fgNhg_entry);
                 assert(m_FgNhgs.find(fgNhg_name) == fgNhgPrefixes.end());
@@ -1347,58 +1466,105 @@ bool FgNhgOrch::doTaskFgNhg_member(const KeyOpFieldsValuesTuple & t)
     string key = kfvKey(t);
     IpAddress next_hop = IpAddress(key);
     NextHopKey nhk(next_hop.to_string());
+    bool link_oper = LINK_UP;
 
     if (op == SET_COMMAND)
     {
-        string fgNhg_name = "";
+        string fg_nhg_name = "";
         uint32_t bank = 0;
+        string link = "";
         for (auto i : kfvFieldsValues(t))
         {
             if (fvField(i) == "FG_NHG")
             {
-                fgNhg_name = fvValue(i);
+                fg_nhg_name = fvValue(i);
             }
-            else if(fvField(i) == "bank")
+            else if (fvField(i) == "bank")
             {
                 bank = stoi(fvValue(i));
             }
+            else if (fvField(i) == "link")
+            {
+                link = fvValue(i);
+            }
         }
-        if(fgNhg_name == "")
+        if (fg_nhg_name.empty())
         {
             SWSS_LOG_ERROR("Received FG_NHG with empty name for key %s", kfvKey(t).c_str());
             return true;
         }
 
-        auto fgNhg_entry = m_FgNhgs.find(fgNhg_name);
-        if(fgNhg_entry == m_FgNhgs.end())
+        auto fgNhg_entry = m_FgNhgs.find(fg_nhg_name);
+        if (fgNhg_entry == m_FgNhgs.end())
         {
-            SWSS_LOG_INFO("%s FG_NHG entry not received yet, continue", __FUNCTION__);
+            SWSS_LOG_INFO("FG_NHG entry not received yet, continue");
             return false;
         }
         else
         {
             /* skip addition if next-hop already exists */
-            if (fgNhg_entry->second.nextHops.find(next_hop) != fgNhg_entry->second.nextHops.end())
+            if (fgNhg_entry->second.next_hops.find(next_hop) != fgNhg_entry->second.next_hops.end())
             {
-                SWSS_LOG_INFO("%s FG_NHG member %s already exists, skip", __FUNCTION__, next_hop.to_string().c_str());
+                SWSS_LOG_INFO("FG_NHG member %s already exists for %s, skip",
+                        next_hop.to_string().c_str(), fg_nhg_name.c_str());
                 return true;
             }
-            fgNhg_entry->second.nextHops[next_hop] = bank;
+            FGNextHopInfo fg_nh_info = {};
+            fg_nh_info.bank = bank;
+
+            if (!link.empty())
+            {
+                /* Identify link oper state for initialization */
+                Port p;
+                if (!gPortsOrch->getPort(link, p))
+                {
+                    SWSS_LOG_WARN("FG_NHG member %s added to %s with non-existent link %s, link mapping skipped",
+                            next_hop.to_string().c_str(), fg_nhg_name.c_str(), link.c_str());
+                }
+                else
+                {
+                    link_oper = LINK_DOWN; /* Default operational state is down */
+                    fg_nh_info.link = link;
+                    if (p.m_oper_status == SAI_PORT_OPER_STATUS_UP)
+                    {
+                        link_oper = LINK_UP;
+                    }
+                    auto link_info = fgNhg_entry->second.links.find(link);
+                    fg_nh_info.link_oper_state = link_oper;
+
+                    if (link_info != fgNhg_entry->second.links.end())
+                    {
+                        link_info->second.push_back(next_hop);
+                    }
+                    else
+                    {
+                        std::vector<IpAddress> ips;
+                        ips.push_back(next_hop);
+                        fgNhg_entry->second.links[link] = ips;
+                    }
+                    SWSS_LOG_INFO("Added link %s to ip %s map", link.c_str(), key.c_str());
+                }
+            }
 
             /* query and check the next hop is valid in neighOrcch */
             if (!m_neighOrch->hasNextHop(nhk))
             {
-                SWSS_LOG_INFO("%s: Failed to get next hop %s in", __FUNCTION__, nhk.to_string().c_str());
-                return true;
+                fgNhg_entry->second.next_hops[next_hop] = fg_nh_info;
+                SWSS_LOG_INFO("Nexthop %s is not resolved yet", nhk.to_string().c_str());
             }
-
-            /* add next-hop into SAI group */
-            if (!validnexthopinNextHopGroup(nhk))
+            else if (link_oper)
             {
-                return false;
+                /* add next-hop into SAI group if associated link is up/no link associated with this nh */
+                if (!validnexthopinNextHopGroup(nhk))
+                {
+                    cleanupIpInLinkToIpMap(link, next_hop, fgNhg_entry->second);
+                    SWSS_LOG_INFO("Failing validNextHopInNextHopGroup for %s", nhk.to_string().c_str());
+                    return false;
+                }
             }
-            SWSS_LOG_INFO("%s FG_NHG member added for group %s, next-hop %s",
-                    __FUNCTION__, fgNhg_entry->second.fgNhg_name.c_str(), next_hop.to_string().c_str());
+            fgNhg_entry->second.next_hops[next_hop] = fg_nh_info;
+            SWSS_LOG_INFO("FG_NHG member added for group %s, next-hop %s",
+                    fgNhg_entry->second.fgNhg_name.c_str(), next_hop.to_string().c_str());
         }
     }
     else if (op == DEL_COMMAND)
@@ -1415,12 +1581,15 @@ bool FgNhgOrch::doTaskFgNhg_member(const KeyOpFieldsValuesTuple & t)
         /* remove next-hop in fgnhg entry*/
         for (auto fgnhg_it = m_FgNhgs.begin(); fgnhg_it != m_FgNhgs.end(); ++fgnhg_it)
         {
-            auto it = fgnhg_it->second.nextHops.find(next_hop);
-            if (it != fgnhg_it->second.nextHops.end())
+            auto it = fgnhg_it->second.next_hops.find(next_hop);
+            if (it != fgnhg_it->second.next_hops.end())
             {
-                SWSS_LOG_INFO("%s FG_NHG member removed for group %s, next-hop %s",
-                        __FUNCTION__, fgnhg_it->second.fgNhg_name.c_str(), next_hop.to_string().c_str());
-                fgnhg_it->second.nextHops.erase(it);
+                string link = it->second.link;
+                cleanupIpInLinkToIpMap(link, next_hop, fgnhg_it->second);
+
+                fgnhg_it->second.next_hops.erase(it);
+                SWSS_LOG_INFO("FG_NHG member removed for group %s, next-hop %s",
+                        fgnhg_it->second.fgNhg_name.c_str(), next_hop.to_string().c_str());
             }
         }
     }
