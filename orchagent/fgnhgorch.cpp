@@ -8,8 +8,8 @@
 #include <array>
 #include <algorithm>
 
-#define LINK_DOWN    false
-#define LINK_UP      true
+#define LINK_DOWN    0
+#define LINK_UP      1
 
 extern sai_object_id_t gVirtualRouterId;
 extern sai_object_id_t gSwitchId;
@@ -838,9 +838,9 @@ bool FgNhgOrch::set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, F
                 bank_nh_memb = nexthopsMap->second[j];
                 SWSS_LOG_INFO("Recovering nexthop %s with bucket %d", bank_nh_memb.ip_address.to_string().c_str(), j);
                 // case nhps in bank are all down
-                if (fgNhgEntry->nextHops[bank_nh_memb.ip_address].bank != i)
+                if (fgNhgEntry->next_hops[bank_nh_memb.ip_address].bank != i)
                 {
-                	syncd_fg_route_entry.inactive_to_active_map[i] = fgNhgEntry->nextHops[bank_nh_memb.ip_address].bank;
+                    syncd_fg_route_entry.inactive_to_active_map[i] = fgNhgEntry->next_hops[bank_nh_memb.ip_address].bank;
                 }
             }
             else

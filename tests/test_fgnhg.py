@@ -6,6 +6,19 @@ import pytest
 
 from swsscommon import swsscommon
 
+IF_TB = 'INTERFACE'
+VLAN_TB = 'VLAN'
+VLAN_MEMB_TB = 'VLAN_MEMBER'
+VLAN_IF_TB = 'VLAN_INTERFACE'
+VLAN_IF = 'VLAN_INTERFACE'
+FG_NHG = 'FG_NHG'
+FG_NHG_PREFIX = 'FG_NHG_PREFIX'
+FG_NHG_MEMBER = 'FG_NHG_MEMBER'
+ROUTE_TB = "ROUTE_TABLE"
+ASIC_ROUTE_TB = "ASIC_STATE:SAI_OBJECT_TYPE_ROUTE_ENTRY"
+ASIC_NHG_MEMB = "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP_GROUP_MEMBER"
+ASIC_NH_TB = "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP"
+
 def create_entry(tbl, key, pairs):
     fvs = swsscommon.FieldValuePairs(pairs)
     tbl.set(key, fvs)
@@ -131,46 +144,12 @@ def swss_get_route_entry_state(state_db,nh_memb_exp_count):
 class TestFineGrainedNextHopGroup(object):
     def test_route_fgnhg(self, dvs, testlog):
         config_db = swsscommon.DBConnector(swsscommon.CONFIG_DB, dvs.redis_sock, 0)
-        intf_tbl = swsscommon.Table(config_db, "INTERFACE")
-        fvs = swsscommon.FieldValuePairs([("NULL","NULL")])
-        intf_tbl.set("Ethernet0", fvs)
-        intf_tbl.set("Ethernet4", fvs)
-        intf_tbl.set("Ethernet8", fvs)
-        intf_tbl.set("Ethernet12", fvs)
-        intf_tbl.set("Ethernet16", fvs)
-        intf_tbl.set("Ethernet20", fvs)
-
-        intf_tbl.set("Ethernet0|10.0.0.0/31", fvs)
-        intf_tbl.set("Ethernet4|10.0.0.2/31", fvs)
-        intf_tbl.set("Ethernet8|10.0.0.4/31", fvs)
-        intf_tbl.set("Ethernet12|10.0.0.6/31", fvs)
-        intf_tbl.set("Ethernet16|10.0.0.8/31", fvs)
-        intf_tbl.set("Ethernet20|10.0.0.10/31", fvs)
-
-        dvs.runcmd("config interface startup Ethernet0")
-        dvs.runcmd("config interface startup Ethernet4")
-        dvs.runcmd("config interface startup Ethernet8")
-        dvs.runcmd("config interface startup Ethernet12")
-        dvs.runcmd("config interface startup Ethernet16")
-        dvs.runcmd("config interface startup Ethernet20")
-
-        dvs.servers[0].runcmd("ip link set down dev eth0") == 0
-        dvs.servers[1].runcmd("ip link set down dev eth0") == 0
-        dvs.servers[2].runcmd("ip link set down dev eth0") == 0
-        dvs.servers[3].runcmd("ip link set down dev eth0") == 0
-        dvs.servers[4].runcmd("ip link set down dev eth0") == 0
-        dvs.servers[5].runcmd("ip link set down dev eth0") == 0
-
-        dvs.servers[0].runcmd("ip link set up dev eth0") == 0
-        dvs.servers[1].runcmd("ip link set up dev eth0") == 0
-        dvs.servers[2].runcmd("ip link set up dev eth0") == 0
-        dvs.servers[3].runcmd("ip link set up dev eth0") == 0
-        dvs.servers[4].runcmd("ip link set up dev eth0") == 0
-        dvs.servers[5].runcmd("ip link set up dev eth0") == 0
-        
         fg_nhg_name = "fgnhg_v4"
         fg_nhg_prefix = "2.2.2.0/24"
         bucket_size = 60
+        fvs_nul = [("NULL", "NULL")]
+        NUM_NHs = 6
+        ip_to_if_map = {}
 
         create_entry_tbl(
             config_db,
@@ -187,66 +166,33 @@ class TestFineGrainedNextHopGroup(object):
                 ("FG_NHG", fg_nhg_name),
             ],
         )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.1",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "0"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.3",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "0"),
-            ],
-        )
-
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.5",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "0"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.7",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "1"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.9",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "1"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.11",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "1"),
-            ],
-        )
+        for i in range(0,NUM_NHs):
+            if_name_key = "Ethernet" + str(i*4)
+            vlan_name_key = "Vlan" + str((i+1)*4)
+            ip_pref_key = vlan_name_key + "|10.0.0." + str(i*2) + "/31"
+            fvs = [("vlanid", str((i+1)*4))]
+            create_entry_tbl(config_db, VLAN_TB , '|' , vlan_name_key, fvs)
+            fvs = [("tagging_mode", "untagged")]
+            create_entry_tbl(config_db, VLAN_MEMB_TB , '|' , vlan_name_key + "|" + if_name_key, fvs)
+            create_entry_tbl(config_db, VLAN_IF_TB , '|' , vlan_name_key, fvs_nul)
+            create_entry_tbl(config_db, VLAN_IF_TB , '|' , ip_pref_key, fvs_nul)
+            dvs.runcmd("config interface startup " + if_name_key)
+            dvs.servers[i].runcmd("ip link set down dev eth0") == 0
+            dvs.servers[i].runcmd("ip link set up dev eth0") == 0
+            bank = 0
+            if i >= NUM_NHs/2:
+                bank = 1
+            fvs = [("FG_NHG", fg_nhg_name), ("bank", str(bank)), ("link", if_name_key)]
+            create_entry_tbl(config_db, FG_NHG_MEMBER , '|' , "10.0.0." + str(1 + i*2), fvs)
+            ip_to_if_map["10.0.0." + str(1 + i*2)] = vlan_name_key
+        
+        time.sleep(3)
+        #"""
 
         db = swsscommon.DBConnector(0, dvs.redis_sock, 0)
         state_db = swsscommon.DBConnector(swsscommon.STATE_DB, dvs.redis_sock, 0)
         ps = swsscommon.ProducerStateTable(db, "ROUTE_TABLE")
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Ethernet12,Ethernet16,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname","Vlan16,Vlan20,Vlan24")])
 
         ps.set(fg_nhg_prefix, fvs)
 
@@ -322,7 +268,7 @@ class TestFineGrainedNextHopGroup(object):
         # ARP is not resolved for 10.0.0.7, so fg nhg should be created with 10.0.0.7
         nh_memb_exp_count = {"10.0.0.9":30,"10.0.0.11":30}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.9@Ethernet16":30,"10.0.0.11@Ethernet20":30}
+        nh__exp_count = {"10.0.0.9@Vlan20":30,"10.0.0.11@Vlan24":30}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         dvs.runcmd("arp -s 10.0.0.7 00:00:00:00:00:04")
@@ -338,27 +284,27 @@ class TestFineGrainedNextHopGroup(object):
         # Now that ARP was resolved, 10.0.0.7 should be added as a valid fg nhg member
         nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.7@Ethernet12":20, "10.0.0.9@Ethernet16":20,"10.0.0.11@Ethernet20":20}
+        nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Bring down 1 next hop
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.11"), ("ifname", "Ethernet12,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.11"), ("ifname", "Vlan16,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.7":30,"10.0.0.11":30}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.7@Ethernet12":30, "10.0.0.11@Ethernet20":30}
+        nh__exp_count = {"10.0.0.7@Vlan16":30, "10.0.0.11@Vlan24":30}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Bring up 1 next hop
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Ethernet12,Ethernet16,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Vlan16,Vlan20,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.7@Ethernet12":20, "10.0.0.9@Ethernet16":20,"10.0.0.11@Ethernet20":20}
+        nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         run_warm_reboot(dvs)
@@ -388,68 +334,68 @@ class TestFineGrainedNextHopGroup(object):
 
         nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.7@Ethernet12":20, "10.0.0.9@Ethernet16":20,"10.0.0.11@Ethernet20":20}
+        nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
 
         # Bring up bank 0 next-hops in route for the 1st time
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Ethernet0,Ethernet4,Ethernet8,Ethernet12,Ethernet16,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Vlan4,Vlan8,Vlan12,Vlan16,Vlan20,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":10,"10.0.0.3":10,"10.0.0.5":10,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":10, "10.0.0.3@Ethernet4":10,"10.0.0.5@Ethernet8":10, "10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.1@Vlan4":10, "10.0.0.3@Vlan8":10,"10.0.0.5@Vlan12":10, "10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Bring down arbitratry # of next-hops from both banks at the same time
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.5,10.0.0.11"), ("ifname", "Ethernet0,Ethernet8,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.5,10.0.0.11"), ("ifname", "Vlan4,Vlan12,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":15,"10.0.0.5":15,"10.0.0.11":30}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":15, "10.0.0.5@Ethernet8":15, "10.0.0.11@Ethernet20":30}
+        nh__exp_count = {"10.0.0.1@Vlan4":15, "10.0.0.5@Vlan12":15, "10.0.0.11@Vlan24":30}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Bring down 1 member and bring up 1 member in bank 0 at the same time
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.11"), ("ifname", "Ethernet0,Ethernet4,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.11"), ("ifname", "Vlan4,Vlan8,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":15,"10.0.0.3":15,"10.0.0.11":30}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":15, "10.0.0.3@Ethernet4":15, "10.0.0.11@Ethernet20":30}
+        nh__exp_count = {"10.0.0.1@Vlan4":15, "10.0.0.3@Vlan8":15, "10.0.0.11@Vlan24":30}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Bring down 2 members and bring up 1 member in bank 0 at the same time
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.5,10.0.0.11"), ("ifname", "Ethernet8,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.5,10.0.0.11"), ("ifname", "Vlan12,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.5":30,"10.0.0.11":30}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.5@Ethernet8":30, "10.0.0.11@Ethernet20":30}
+        nh__exp_count = {"10.0.0.5@Vlan12":30, "10.0.0.11@Vlan24":30}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Bring up 2 members and bring down 1 member in bank 0 at the same time
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.11"), ("ifname", "Ethernet0,Ethernet4,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.11"), ("ifname", "Vlan4,Vlan8,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":15,"10.0.0.3":15,"10.0.0.11":30}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":15,"10.0.0.3@Ethernet4":15,"10.0.0.11@Ethernet20":30}
+        nh__exp_count = {"10.0.0.1@Vlan4":15,"10.0.0.3@Vlan8":15,"10.0.0.11@Vlan24":30}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Bringup arbitrary # of next-hops from both banks at the same time
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Ethernet0,Ethernet4,Ethernet8,Ethernet12,Ethernet16,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Vlan4,Vlan8,Vlan12,Vlan16,Vlan20,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":10,"10.0.0.3":10,"10.0.0.5":10,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":10, "10.0.0.3@Ethernet4":10,"10.0.0.5@Ethernet8":10, "10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.1@Vlan4":10, "10.0.0.3@Vlan8":10,"10.0.0.5@Vlan12":10, "10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         print "########################test warm reboot#########################################"
@@ -485,7 +431,7 @@ class TestFineGrainedNextHopGroup(object):
 
         nh_memb_exp_count = {"10.0.0.1":10,"10.0.0.3":10,"10.0.0.5":10,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":10, "10.0.0.3@Ethernet4":10,"10.0.0.5@Ethernet8":10, "10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.1@Vlan4":10, "10.0.0.3@Vlan8":10,"10.0.0.5@Vlan12":10, "10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         print "########################Recover from warm reboot#########################################"
@@ -497,64 +443,64 @@ class TestFineGrainedNextHopGroup(object):
         #############################################################################
 
         # Test bank down
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5"), ("ifname", "Ethernet0,Ethernet4,Ethernet8")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5"), ("ifname", "Vlan4,Vlan8,Vlan12")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":20,"10.0.0.3":20,"10.0.0.5":20}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":20, "10.0.0.3@Ethernet4":20,"10.0.0.5@Ethernet8":20}
+        nh__exp_count = {"10.0.0.1@Vlan4":20, "10.0.0.3@Vlan8":20,"10.0.0.5@Vlan12":20}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Test bank down: nh change in active bank
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.5"), ("ifname", "Ethernet0,Ethernet8")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.5"), ("ifname", "Vlan4,Vlan12")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":30,"10.0.0.5":30}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":30, "10.0.0.5@Ethernet8":30}
+        nh__exp_count = {"10.0.0.1@Vlan4":30, "10.0.0.5@Vlan12":30}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
 
         # Test 1st memb up in bank
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.5,10.0.0.11"), ("ifname", "Ethernet0,Ethernet8,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.5,10.0.0.11"), ("ifname", "Vlan4,Vlan12,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":15,"10.0.0.5":15,"10.0.0.11":30}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":15, "10.0.0.5@Ethernet8":15, "10.0.0.11@Ethernet20":30}
+        nh__exp_count = {"10.0.0.1@Vlan4":15, "10.0.0.5@Vlan12":15, "10.0.0.11@Vlan24":30}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Test 2nd,3rd memb up in bank
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Ethernet0,Ethernet8,Ethernet12,Ethernet16,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Vlan4,Vlan12,Vlan16,Vlan20,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
 
         nh_memb_exp_count = {"10.0.0.1":15,"10.0.0.5":15,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":15,"10.0.0.5@Ethernet8":15, "10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.1@Vlan4":15,"10.0.0.5@Vlan12":15, "10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # bring all links down one by one
         shutdown_link(dvs, db, 0)	
         nh_memb_exp_count = {"10.0.0.5":30,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.5@Ethernet8":30, "10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.5@Vlan12":30, "10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
 	shutdown_link(dvs, db, 2)
         nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.7@Ethernet12":20, "10.0.0.9@Ethernet16":20,"10.0.0.11@Ethernet20":20}
+        nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
 	shutdown_link(dvs, db, 3)
 	shutdown_link(dvs, db, 4)
         nh_memb_exp_count = {"10.0.0.11":60}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.11@Ethernet20":60}
+        nh__exp_count = {"10.0.0.11@Vlan24":60}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Bring down last link, there shouldn't be a crash or other bad orchagent state because of this
@@ -566,19 +512,19 @@ class TestFineGrainedNextHopGroup(object):
         startup_link(dvs, db, 5)
         nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.7@Ethernet12":20, "10.0.0.9@Ethernet16":20,"10.0.0.11@Ethernet20":20}
+        nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         startup_link(dvs, db, 2)
         nh_memb_exp_count = {"10.0.0.5":30,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.5@Ethernet8":30,"10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.5@Vlan12":30,"10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         startup_link(dvs, db, 0)
         nh_memb_exp_count = {"10.0.0.1":15,"10.0.0.5":15,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":15,"10.0.0.5@Ethernet8":15,"10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.1@Vlan4":15,"10.0.0.5@Vlan12":15,"10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # remove fgnhg member
@@ -589,7 +535,7 @@ class TestFineGrainedNextHopGroup(object):
         )
         nh_memb_exp_count = {"10.0.0.5":30,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.5@Ethernet8":30,"10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.5@Vlan12":30,"10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # add fgnhg member
@@ -603,7 +549,7 @@ class TestFineGrainedNextHopGroup(object):
         )
         nh_memb_exp_count = {"10.0.0.1":15,"10.0.0.5":15,"10.0.0.7":10,"10.0.0.9":10,"10.0.0.11":10}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.1@Ethernet0":15,"10.0.0.5@Ethernet8":15,"10.0.0.7@Ethernet12":10, "10.0.0.9@Ethernet16":10,"10.0.0.11@Ethernet20":10}
+        nh__exp_count = {"10.0.0.1@Vlan4":15,"10.0.0.5@Vlan12":15,"10.0.0.7@Vlan16":10, "10.0.0.9@Vlan20":10,"10.0.0.11@Vlan24":10}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # Remove route
@@ -630,7 +576,7 @@ class TestFineGrainedNextHopGroup(object):
         )
 
         # add normal route
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Ethernet12,Ethernet16,Ethernet20")])
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Vlan16,Vlan20,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
 
         time.sleep(1)
@@ -680,7 +626,7 @@ class TestFineGrainedNextHopGroup(object):
 
         nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-        nh__exp_count = {"10.0.0.7@Ethernet12":20, "10.0.0.9@Ethernet16":20,"10.0.0.11@Ethernet20":20}
+        nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
         swss_get_route_entry_state(state_db, nh__exp_count)
 
         # remove fgnhg prefix
@@ -718,43 +664,19 @@ class TestFineGrainedNextHopGroup(object):
             "FG_NHG", 
             fg_nhg_name,
         )
-        
-        remove_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", 
-            "10.0.0.1",
-        )
-        
-        remove_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", 
-            "10.0.0.3",
-        )
-        
-        remove_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", 
-            "10.0.0.5",
-        )
-        
-        remove_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", 
-            "10.0.0.7",
-        )
-        
-        remove_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", 
-            "10.0.0.9",
-        )
-        
-        remove_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", 
-            "10.0.0.11",
-        )
-       
+
+        for i in range(0,NUM_NHs):
+            if_name_key = "Ethernet" + str(i*4)
+            vlan_name_key = "Vlan" + str((i+1)*4)
+            ip_pref_key = vlan_name_key + "|10.0.0." + str(i*2) + "/31"
+            remove_entry_tbl(config_db, VLAN_MEMB_TB , vlan_name_key + "|" + if_name_key)
+            remove_entry_tbl(config_db, VLAN_IF_TB , vlan_name_key)
+            remove_entry_tbl(config_db, VLAN_IF_TB , ip_pref_key)
+            remove_entry_tbl(config_db, VLAN_TB , vlan_name_key)
+            dvs.runcmd("config interface shutdown " + if_name_key)
+            dvs.servers[i].runcmd("ip link set down dev eth0") == 0
+            remove_entry_tbl(config_db, FG_NHG_MEMBER , "10.0.0." + str(1 + i*2))
+
         # remove group should succeeds
         remove_entry_tbl(
             config_db,
@@ -762,35 +684,15 @@ class TestFineGrainedNextHopGroup(object):
             fg_nhg_name,
         )
 
-        intf_tbl.set("Ethernet24", fvs)
-        intf_tbl.set("Ethernet28", fvs)
-        intf_tbl.set("Ethernet32", fvs)
-        intf_tbl.set("Ethernet36", fvs)
 
-        intf_tbl.set("Ethernet24|10.0.0.12/31", fvs)
-        intf_tbl.set("Ethernet28|10.0.0.14/31", fvs)
-        intf_tbl.set("Ethernet32|10.0.0.16/31", fvs)
-        intf_tbl.set("Ethernet36|10.0.0.18/31", fvs)
-
-        dvs.runcmd("config interface startup Ethernet24")
-        dvs.runcmd("config interface startup Ethernet28")
-        dvs.runcmd("config interface startup Ethernet32")
-        dvs.runcmd("config interface startup Ethernet36")
-
-        dvs.servers[6].runcmd("ip link set down dev eth0") == 0
-        dvs.servers[7].runcmd("ip link set down dev eth0") == 0
-        dvs.servers[8].runcmd("ip link set down dev eth0") == 0
-        dvs.servers[9].runcmd("ip link set down dev eth0") == 0
-
-        dvs.servers[6].runcmd("ip link set up dev eth0") == 0
-        dvs.servers[7].runcmd("ip link set up dev eth0") == 0
-        dvs.servers[8].runcmd("ip link set up dev eth0") == 0
-        dvs.servers[9].runcmd("ip link set up dev eth0") == 0
-
+        ### Create new set of entries with a greater number of FG members and
+        ### bigger bucket size such that the # of nhs are not divisible by
+        ### bucket size. Different physical interface type for dynamicitiy.
         fg_nhg_name = "new_fgnhg_v4"
         fg_nhg_prefix = "3.3.3.0/24"
         # Test with non-divisible bucket size
         bucket_size = 128
+        NUM_NHs = 10
 
         create_entry_tbl(
             config_db,
@@ -807,107 +709,28 @@ class TestFineGrainedNextHopGroup(object):
                 ("FG_NHG", fg_nhg_name),
             ],
         )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.1",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "1"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.3",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "1"),
-            ],
-        )
-
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.5",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "1"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.7",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "1"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.9",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "1"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.11",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "0"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.13",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "0"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.15",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "0"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.17",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "0"),
-            ],
-        )
-
-        create_entry_tbl(
-            config_db,
-            "FG_NHG_MEMBER", '|', "10.0.0.19",
-            [
-                ("FG_NHG", fg_nhg_name),
-                ("bank", "0"),
-            ],
-        )
+        for i in range(0,NUM_NHs):
+            if_name_key = "Ethernet" + str(i*4)
+            ip_pref_key = if_name_key + "|10.0.0." + str(i*2) + "/31"
+            create_entry_tbl(config_db, IF_TB , '|' , if_name_key, fvs_nul)
+            create_entry_tbl(config_db, IF_TB , '|' , ip_pref_key, fvs_nul)
+            dvs.runcmd("config interface startup " + if_name_key)
+            dvs.servers[i].runcmd("ip link set down dev eth0") == 0
+            dvs.servers[i].runcmd("ip link set up dev eth0") == 0
+            bank = 0
+            if i >= NUM_NHs/2:
+                bank = 1
+            fvs = [("FG_NHG", fg_nhg_name), ("bank", str(bank)), ("link", if_name_key)]
+            create_entry_tbl(config_db, FG_NHG_MEMBER , '|' , "10.0.0." + str(1 + i*2), fvs)
+            ip_to_if_map["10.0.0." + str(1 + i*2)] = vlan_name_key
+            dvs.runcmd("arp -s 10.0.0." + str(1 + i*2) + " 00:00:00:00:00:" + str(1 + i*2))
         
-        dvs.runcmd("arp -s 10.0.0.13 00:00:00:00:00:13")
-        dvs.runcmd("arp -s 10.0.0.15 00:00:00:00:00:15")
-        dvs.runcmd("arp -s 10.0.0.17 00:00:00:00:00:17")
-        dvs.runcmd("arp -s 10.0.0.19 00:00:00:00:00:19")
-        time.sleep(1)
+        time.sleep(3)
+
 
         db = swsscommon.DBConnector(0, dvs.redis_sock, 0)
         ps = swsscommon.ProducerStateTable(db, "ROUTE_TABLE")
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.11"), 
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.11"),
             ("ifname", "Ethernet0,Ethernet20")])
 
         ps.set(fg_nhg_prefix, fvs)
@@ -961,7 +784,7 @@ class TestFineGrainedNextHopGroup(object):
         nh_memb_exp_count = {"10.0.0.1":64,"10.0.0.11":64}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
 
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.11,10.0.0.13,10.0.0.15"), 
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.11,10.0.0.13,10.0.0.15"),
             ("ifname", "Ethernet0,Ethernet4,Ethernet8,Ethernet20,Ethernet24,Ethernet28")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
@@ -969,7 +792,7 @@ class TestFineGrainedNextHopGroup(object):
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
 
 
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11,10.0.0.13,10.0.0.15,10.0.0.17,10.0.0.19"), 
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11,10.0.0.13,10.0.0.15,10.0.0.17,10.0.0.19"),
             ("ifname", "Ethernet0,Ethernet4,Ethernet8,Ethernet12,Ethernet16,Ethernet20,Ethernet24,Ethernet28,Ethernet32,Ethernet36")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
@@ -977,7 +800,7 @@ class TestFineGrainedNextHopGroup(object):
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
 
 
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11,10.0.0.13,10.0.0.19"), 
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11,10.0.0.13,10.0.0.19"),
             ("ifname", "Ethernet4,Ethernet8,Ethernet12,Ethernet16,Ethernet20,Ethernet24,Ethernet36")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
@@ -985,7 +808,7 @@ class TestFineGrainedNextHopGroup(object):
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
 
 
-        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.3,10.0.0.7,10.0.0.9,10.0.0.13,10.0.0.15,10.0.0.17,10.0.0.19"), 
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.3,10.0.0.7,10.0.0.9,10.0.0.13,10.0.0.15,10.0.0.17,10.0.0.19"),
             ("ifname", "Ethernet4,Ethernet12,Ethernet16,Ethernet24,Ethernet28,Ethernet32,Ethernet36")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
@@ -1003,9 +826,8 @@ class TestFineGrainedNextHopGroup(object):
         fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.5,10.0.0.7,10.0.0.9"), ("ifname", "Ethernet8,Ethernet12,Ethernet16")])
         ps.set(fg_nhg_prefix, fvs)
         time.sleep(1)
-        nh_memb_exp_count = {"10.0.0.5":42,"10.0.0.7":44,"10.0.0.9":42}
+        nh_memb_exp_count = {"10.0.0.5":43,"10.0.0.7":43,"10.0.0.9":42}
         verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
-
 
         fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.1,10.0.0.3,10.0.0.5,10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname", "Ethernet0,Ethernet4,Ethernet8,Ethernet12,Ethernet16,Ethernet20")])
         ps.set(fg_nhg_prefix, fvs)
@@ -1031,7 +853,7 @@ class TestFineGrainedNextHopGroup(object):
         # remove fgnhg prefix
         remove_entry_tbl(
             config_db,
-            "FG_NHG_PREFIX", 
+            "FG_NHG_PREFIX",
             fg_nhg_prefix,
         )
 
