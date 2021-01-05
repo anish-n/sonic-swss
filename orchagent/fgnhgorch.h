@@ -31,14 +31,25 @@ struct FGNextHopGroupEntry
     InactiveBankMapsToBank  inactive_to_active_map; // Maps an inactive bank to an active one in terms of hash bkts
 };
 
+struct FGNextHopInfo
+{
+    Bank bank;                                      // Bank associated with nh IP
+    string link;                                    // Link name associated with nh IP(optional)
+    bool link_oper_state;                           // Current link oper state(optional)
+};
+
 /*TODO: can we make an optimization here when we get multiple routes pointing to a fgnhg */
 typedef std::map<IpPrefix, FGNextHopGroupEntry> FGRouteTable;
 /* RouteTables: vrf_id, FGRouteTable */
 typedef std::map<sai_object_id_t, FGRouteTable> FGRouteTables;
 /* Name of the FG NHG group */
 typedef std::string FgNhg;
-/* Map from IP to Bank */
-typedef std::map<IpAddress, Bank> NextHops;
+/* FG_NHG member info: map nh IP to FG NHG member info */
+typedef std::map<IpAddress, FGNextHopInfo> NextHops;
+/* Cache currently ongoing FG_NHG PREFIX additions/deletions */
+typedef std::map<IpPrefix, NextHopGroupKey> FgPrefixOpCache;
+/* Map from link name to next-hop IP */
+typedef std::unordered_map<string, std::vector<IpAddress>> Links;
 
 /* Store the indices occupied by a bank */
 typedef struct
@@ -52,7 +63,8 @@ typedef struct FgNhgEntry
     string fgNhg_name;                                  // Name of FG NHG group configured by user
     uint32_t configured_bucket_size;                    // Bucket size configured by user
     uint32_t real_bucket_size;                          // Real bucket size as queried from SAI
-    NextHops nextHops;                                  // The IP to Bank mapping configured by user
+    NextHops next_hops;                                  // The IP to Bank mapping configured by user
+    Links links;                                      // Link to IP map for oper changes
     std::vector<IpPrefix> prefixes;                     // Prefix which desires FG behavior
     std::vector<bank_index_range> hash_bucket_indices;  // The hash bucket indices for a bank
 } FgNhgEntry;
@@ -73,12 +85,13 @@ typedef struct
 typedef std::vector<string> NextHopIndexMap;
 typedef map<string, NextHopIndexMap> WarmBootRecoveryMap;
 
-class FgNhgOrch : public Orch
+class FgNhgOrch : public Orch, public Observer
 {
 public:
     FgNhgPrefixes fgNhgPrefixes;
     FgNhgOrch(DBConnector *db, DBConnector *stateDb, vector<table_name_with_pri_t> &tableNames, NeighOrch *neighOrch, IntfsOrch *intfsOrch, VRFOrch *vrfOrch);
 
+    void update(SubjectType type, void *cntx);
     bool addRoute(sai_object_id_t, const IpPrefix&, const NextHopGroupKey&);
     bool removeRoute(sai_object_id_t, const IpPrefix&);
     bool validnexthopinNextHopGroup(const NextHopKey&);
@@ -119,6 +132,7 @@ private:
     void remove_state_db_route_entry(const std::string& name);
     bool write_hash_bucket_change_to_sai(FGNextHopGroupEntry *syncd_fg_route_entry, uint32_t index, sai_object_id_t nh_oid,
             const IpPrefix &ipPrefix, NextHopKey nextHop);
+    void cleanupIpInLinkToIpMap(const string &link, const IpAddress &ip, FgNhgEntry &fgNhg_entry);
 
     bool doTaskFgNhg(const KeyOpFieldsValuesTuple&);
     bool doTaskFgNhg_prefix(const KeyOpFieldsValuesTuple&);
