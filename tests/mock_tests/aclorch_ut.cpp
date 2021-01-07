@@ -377,7 +377,7 @@ namespace aclorch_test
 
             ASSERT_EQ(gRouteOrch, nullptr);
 
-            gRouteOrch = new RouteOrch(m_app_db.get(), APP_ROUTE_TABLE_NAME, gNeighOrch, gIntfsOrch, gVrfOrch, gFgNhgOrch);
+            gRouteOrch = new RouteOrch(m_app_db.get(), APP_ROUTE_TABLE_NAME, gSwitchOrch, gNeighOrch, gIntfsOrch, gVrfOrch, gFgNhgOrch);
 
 
             TableConnector applDbFdb(m_app_db.get(), APP_FDB_TABLE_NAME);
