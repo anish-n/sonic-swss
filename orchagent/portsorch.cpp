@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <tuple>
 #include <sstream>
+#include <unordered_set>
 
 #include <netinet/if_ether.h>
 #include "net/if.h"
@@ -48,6 +49,9 @@ extern FdbOrch *gFdbOrch;
 #define QUEUE_FLEX_STAT_COUNTER_POLL_MSECS "10000"
 #define QUEUE_WATERMARK_FLEX_STAT_COUNTER_POLL_MSECS "10000"
 #define PG_WATERMARK_FLEX_STAT_COUNTER_POLL_MSECS "10000"
+#define PORT_STAT_FLEX_COUNTER_POLLING_INTERVAL_MS     1000
+#define QUEUE_STAT_FLEX_COUNTER_POLLING_INTERVAL_MS   10000
+
 
 
 static map<string, sai_port_fec_mode_t> fec_mode_map =
@@ -73,6 +77,50 @@ static map<string, sai_bridge_port_fdb_learning_mode_t> learn_mode_map =
     { "notification", SAI_BRIDGE_PORT_FDB_LEARNING_MODE_FDB_NOTIFICATION}
 };
 
+const vector<sai_port_stat_t> port_stat_ids =
+{
+    SAI_PORT_STAT_IF_IN_OCTETS,
+    SAI_PORT_STAT_IF_IN_UCAST_PKTS,
+    SAI_PORT_STAT_IF_IN_NON_UCAST_PKTS,
+    SAI_PORT_STAT_IF_IN_DISCARDS,
+    SAI_PORT_STAT_IF_IN_ERRORS,
+    SAI_PORT_STAT_IF_IN_UNKNOWN_PROTOS,
+    SAI_PORT_STAT_IF_OUT_OCTETS,
+    SAI_PORT_STAT_IF_OUT_UCAST_PKTS,
+    SAI_PORT_STAT_IF_OUT_NON_UCAST_PKTS,
+    SAI_PORT_STAT_IF_OUT_DISCARDS,
+    SAI_PORT_STAT_IF_OUT_ERRORS,
+    SAI_PORT_STAT_IF_OUT_QLEN,
+    SAI_PORT_STAT_IF_IN_MULTICAST_PKTS,
+    SAI_PORT_STAT_IF_IN_BROADCAST_PKTS,
+    SAI_PORT_STAT_IF_OUT_MULTICAST_PKTS,
+    SAI_PORT_STAT_IF_OUT_BROADCAST_PKTS,
+    SAI_PORT_STAT_ETHER_RX_OVERSIZE_PKTS,
+    SAI_PORT_STAT_ETHER_TX_OVERSIZE_PKTS,
+    SAI_PORT_STAT_PFC_0_TX_PKTS,
+    SAI_PORT_STAT_PFC_1_TX_PKTS,
+    SAI_PORT_STAT_PFC_2_TX_PKTS,
+    SAI_PORT_STAT_PFC_3_TX_PKTS,
+    SAI_PORT_STAT_PFC_4_TX_PKTS,
+    SAI_PORT_STAT_PFC_5_TX_PKTS,
+    SAI_PORT_STAT_PFC_6_TX_PKTS,
+    SAI_PORT_STAT_PFC_7_TX_PKTS,
+    SAI_PORT_STAT_PFC_0_RX_PKTS,
+    SAI_PORT_STAT_PFC_1_RX_PKTS,
+    SAI_PORT_STAT_PFC_2_RX_PKTS,
+    SAI_PORT_STAT_PFC_3_RX_PKTS,
+    SAI_PORT_STAT_PFC_4_RX_PKTS,
+    SAI_PORT_STAT_PFC_5_RX_PKTS,
+    SAI_PORT_STAT_PFC_6_RX_PKTS,
+    SAI_PORT_STAT_PFC_7_RX_PKTS,
+    SAI_PORT_STAT_PAUSE_RX_PKTS,
+    SAI_PORT_STAT_PAUSE_TX_PKTS,
+    SAI_PORT_STAT_ETHER_STATS_TX_NO_ERRORS,
+    SAI_PORT_STAT_IP_IN_UCAST_PKTS,
+    SAI_PORT_STAT_ETHER_IN_PKTS_128_TO_255_OCTETS,
+};
+
+//in any case
 const vector<sai_port_stat_t> portStatIds =
 {
     SAI_PORT_STAT_IF_IN_OCTETS,
@@ -116,10 +164,20 @@ const vector<sai_port_stat_t> portStatIds =
     SAI_PORT_STAT_ETHER_IN_PKTS_128_TO_255_OCTETS,
 };
 
+
 static const vector<sai_port_stat_t> port_buffer_drop_stat_ids =
 {
     SAI_PORT_STAT_IN_DROPPED_PKTS,
     SAI_PORT_STAT_OUT_DROPPED_PKTS
+};
+
+
+static const vector<sai_queue_stat_t> queue_stat_ids =
+{
+    SAI_QUEUE_STAT_PACKETS,
+    SAI_QUEUE_STAT_BYTES,
+    SAI_QUEUE_STAT_DROPPED_PACKETS,
+    SAI_QUEUE_STAT_DROPPED_BYTES,
 };
 
 static const vector<sai_queue_stat_t> queueStatIds =
@@ -160,7 +218,9 @@ static char* hostif_vlan_tag[] = {
  *    default VLAN and all ports removed from .1Q bridge.
  */
 PortsOrch::PortsOrch(DBConnector *db, vector<table_name_with_pri_t> &tableNames) :
-        Orch(db, tableNames)
+        Orch(db, tableNames),
+        port_stat_manager(PORT_STAT_COUNTER_FLEX_COUNTER_GROUP, StatsMode::READ, PORT_STAT_FLEX_COUNTER_POLLING_INTERVAL_MS, true),
+        queue_stat_manager(QUEUE_STAT_COUNTER_FLEX_COUNTER_GROUP, StatsMode::READ, QUEUE_STAT_FLEX_COUNTER_POLLING_INTERVAL_MS, true)
 {
     SWSS_LOG_ENTER();
 
@@ -192,20 +252,21 @@ PortsOrch::PortsOrch(DBConnector *db, vector<table_name_with_pri_t> &tableNames)
     m_flexCounterTable = unique_ptr<ProducerTable>(new ProducerTable(m_flex_db.get(), FLEX_COUNTER_TABLE));
     m_flexCounterGroupTable = unique_ptr<ProducerTable>(new ProducerTable(m_flex_db.get(), FLEX_COUNTER_GROUP_TABLE));
 
-    vector<FieldValueTuple> fields;
-    fields.emplace_back(POLL_INTERVAL_FIELD, PORT_FLEX_STAT_COUNTER_POLL_MSECS);
-    fields.emplace_back(STATS_MODE_FIELD, STATS_MODE_READ);
-    m_flexCounterGroupTable->set(PORT_STAT_COUNTER_FLEX_COUNTER_GROUP, fields);
+    //NOTE: master 1170 commit does not have the below lines.
+    //vector<FieldValueTuple> fields;
+    //fields.emplace_back(POLL_INTERVAL_FIELD, PORT_FLEX_STAT_COUNTER_POLL_MSECS);
+    //fields.emplace_back(STATS_MODE_FIELD, STATS_MODE_READ);
+    //m_flexCounterGroupTable->set(PORT_STAT_COUNTER_FLEX_COUNTER_GROUP, fields);
 
-    fields.clear();
-    fields.emplace_back(POLL_INTERVAL_FIELD, PORT_BUFFER_DROP_STAT_POLLING_INTERVAL_MS);
-    fields.emplace_back(STATS_MODE_FIELD, STATS_MODE_READ);
-    m_flexCounterGroupTable->set(PORT_DROP_STAT_COUNTER_FLEX_COUNTER_GROUP, fields);
+    //fields.clear();
+    //fields.emplace_back(POLL_INTERVAL_FIELD, PORT_BUFFER_DROP_STAT_POLLING_INTERVAL_MS);
+    //fields.emplace_back(STATS_MODE_FIELD, STATS_MODE_READ);
+    //m_flexCounterGroupTable->set(PORT_DROP_STAT_COUNTER_FLEX_COUNTER_GROUP, fields);
 
-    fields.clear();
-    fields.emplace_back(POLL_INTERVAL_FIELD, QUEUE_FLEX_STAT_COUNTER_POLL_MSECS);
-    fields.emplace_back(STATS_MODE_FIELD, STATS_MODE_READ);
-    m_flexCounterGroupTable->set(QUEUE_STAT_COUNTER_FLEX_COUNTER_GROUP, fields);
+    //fields.clear();
+    //fields.emplace_back(POLL_INTERVAL_FIELD, QUEUE_FLEX_STAT_COUNTER_POLL_MSECS);
+    //fields.emplace_back(STATS_MODE_FIELD, STATS_MODE_READ);
+    //m_flexCounterGroupTable->set(QUEUE_STAT_COUNTER_FLEX_COUNTER_GROUP, fields);
 
     string queueWmSha, pgWmSha;
     string queueWmPluginName = "watermark_queue.lua";
@@ -1494,20 +1555,22 @@ bool PortsOrch::removePort(sai_object_id_t port_id)
     return true;
 }
 
-string PortsOrch::getPortFlexCounterTableKey(string key)
-{
-    return string(PORT_STAT_COUNTER_FLEX_COUNTER_GROUP) + ":" + key;
-}
+
+//NOTE: commenting out below because 1170 master did this...
+//string PortsOrch::getPortFlexCounterTableKey(string key)
+//{
+//    return string(PORT_STAT_COUNTER_FLEX_COUNTER_GROUP) + ":" + key;
+//}
 
 string PortsOrch::getPortBuffDropFlexCounterTableKey(string key)
 {
     return string(PORT_DROP_STAT_COUNTER_FLEX_COUNTER_GROUP) + ":" + key;
 }
 
-string PortsOrch::getQueueFlexCounterTableKey(string key)
-{
-    return string(QUEUE_STAT_COUNTER_FLEX_COUNTER_GROUP) + ":" + key;
-}
+//string PortsOrch::getQueueFlexCounterTableKey(string key)
+//{
+//    return string(QUEUE_STAT_COUNTER_FLEX_COUNTER_GROUP) + ":" + key;
+//}
 
 string PortsOrch::getQueueWatermarkFlexCounterTableKey(string key)
 {
@@ -1553,32 +1616,39 @@ bool PortsOrch::initPort(const string &alias, const set<int> &lane_set)
                 m_counterTable->set("", fields);
 
                 /* Add port to flex_counter for updating stat counters  */
-                string key = getPortFlexCounterTableKey(sai_serialize_object_id(p.m_port_id));
-                std::string delimiter = "";
-                std::ostringstream counters_stream;
-                for (const auto &id: portStatIds)
+                //string key = getPortFlexCounterTableKey(sai_serialize_object_id(p.m_port_id));
+                //std::string delimiter = "";
+                //std::ostringstream counters_stream;
+                //for (const auto &id: portStatIds)
+                //{
+                //    counters_stream << delimiter << sai_serialize_port_stat(id);
+                //    delimiter = comma;
+                //}
+		
+		std::unordered_set<std::string> counter_stats;
+                for (const auto& it: port_stat_ids)
                 {
-                    counters_stream << delimiter << sai_serialize_port_stat(id);
-                    delimiter = comma;
+		    counter_stats.emplace(sai_serialize_port_stat(it));
                 }
+                port_stat_manager.setCounterIdList(p.m_port_id, CounterType::PORT, counter_stats);
 
-                fields.clear();
-                fields.emplace_back(PORT_COUNTER_ID_LIST, counters_stream.str());
+                //fields.clear();
+                //fields.emplace_back(PORT_COUNTER_ID_LIST, counters_stream.str());
 
-                m_flexCounterTable->set(key, fields);
+                //m_flexCounterTable->set(key, fields);
 
-                delimiter = "";
-                string port_drop_key = getPortBuffDropFlexCounterTableKey(sai_serialize_object_id(p.m_port_id));
-                std::ostringstream port_buffer_drop_stream;
-                for (const auto& it: port_buffer_drop_stat_ids)
-                {
-                    port_buffer_drop_stream << delimiter << sai_serialize_port_stat(it);
-                    delimiter = comma;
-                }
+                //delimiter = "";
+                //string port_drop_key = getPortBuffDropFlexCounterTableKey(sai_serialize_object_id(p.m_port_id));
+                //std::ostringstream port_buffer_drop_stream;
+                //for (const auto& it: port_buffer_drop_stat_ids)
+                //{
+                //    port_buffer_drop_stream << delimiter << sai_serialize_port_stat(it);
+                //    delimiter = comma;
+                //}
 
-                fields.clear();
-                fields.emplace_back(PORT_COUNTER_ID_LIST, port_buffer_drop_stream.str());
-                m_flexCounterTable->set(port_drop_key, fields);
+                //fields.clear();
+                //fields.emplace_back(PORT_COUNTER_ID_LIST, port_buffer_drop_stream.str());
+                //m_flexCounterTable->set(port_drop_key, fields);
 
                 PortUpdate update = {p, true };
                 notify(SUBJECT_TYPE_PORT_CHANGE, static_cast<void *>(&update));
@@ -3559,34 +3629,26 @@ void PortsOrch::generateQueueMapPerPort(const Port& port)
             queueIndexVector.emplace_back(id, to_string(queueRealIndex));
         }
 
-        /* add ordinary Queue stat counters */
-        string key = getQueueFlexCounterTableKey(id);
-
-        std::string delimiter = "";
-        std::ostringstream counters_stream;
-        for (const auto& it: queueStatIds)
+        // Install a flex counter for this queue to track stats
+        std::unordered_set<string> counter_stats;
+        for (const auto& it: queue_stat_ids)
         {
-            counters_stream << delimiter << sai_serialize_queue_stat(it);
-            delimiter = comma;
+            counter_stats.emplace(sai_serialize_queue_stat(it));
         }
-
-        vector<FieldValueTuple> fieldValues;
-        fieldValues.emplace_back(QUEUE_COUNTER_ID_LIST, counters_stream.str());
-
-        m_flexCounterTable->set(key, fieldValues);
+        queue_stat_manager.setCounterIdList(port.m_queue_ids[queueIndex], CounterType::QUEUE, counter_stats);
 
         /* add watermark queue counters */
-        key = getQueueWatermarkFlexCounterTableKey(id);
+        string key = getQueueWatermarkFlexCounterTableKey(id);
 
-        delimiter = "";
-        counters_stream.str("");
+        string delimiter("");
+        std::ostringstream counters_stream;
         for (const auto& it: queueWatermarkStatIds)
         {
             counters_stream << delimiter << sai_serialize_queue_stat(it);
             delimiter = comma;
         }
 
-        fieldValues.clear();
+        vector<FieldValueTuple> fieldValues;
         fieldValues.emplace_back(QUEUE_COUNTER_ID_LIST, counters_stream.str());
 
         m_flexCounterTable->set(key, fieldValues);
