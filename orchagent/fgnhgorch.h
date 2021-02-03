@@ -141,7 +141,7 @@ private:
     bool set_inactive_bank_to_next_available_active_bank(FGNextHopGroupEntry *syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                         uint32_t bank, std::vector<Bank_Member_Changes> bank_member_changes,
                         std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
-    bool remove_nhg(FGNextHopGroupEntry *syncd_fg_route_entry, FgNhgEntry *fgNhgEntry);
+    bool remove_nhg(FGNextHopGroupEntry *syncd_fg_route_entry);
     void set_state_db_route_entry(const IpPrefix&, uint32_t index, NextHopKey nextHop);
     void remove_state_db_route_entry(const std::string& name);
     bool write_hash_bucket_change_to_sai(FGNextHopGroupEntry *syncd_fg_route_entry, uint32_t index, sai_object_id_t nh_oid,
