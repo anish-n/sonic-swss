@@ -749,34 +749,39 @@ bool FgNhgOrch::set_inactive_bank_to_next_available_active_bank(FGNextHopGroupEn
                 ipPrefix.to_string().c_str());
 
         /* This may occur when there are no neigh entries available any more
-         * set route pointing to rif to allow for neigh resolution in kernel
+         * set route pointing to rif to allow for neigh resolution in kernel.
+         * If route already points to rif when we are done.
          */
-        std::string interface_alias = syncd_fg_route_entry->nhg_key.getNextHops().begin()->alias;
-        sai_object_id_t rif_next_hop_id = m_intfsOrch->getRouterIntfsId(interface_alias);
-        if (rif_next_hop_id == SAI_NULL_OBJECT_ID)
+        if (!syncd_fg_route_entry->points_to_rif)
         {
-            SWSS_LOG_INFO("Failed to get rif next hop for %s", interface_alias.c_str());
-            return false;
-        }
-        if (!modifyRoutesNextHopId(gVirtualRouterId, ipPrefix, rif_next_hop_id))
-        {
-            return false;
-        }
-        syncd_fg_route_entry->points_to_rif = true;
-        syncd_fg_route_entry->next_hop_group_id = rif_next_hop_id;
+            std::string interface_alias = syncd_fg_route_entry->nhg_key.getNextHops().begin()->alias;
+            sai_object_id_t rif_next_hop_id = m_intfsOrch->getRouterIntfsId(interface_alias);
+            if (rif_next_hop_id == SAI_NULL_OBJECT_ID)
+            {
+                SWSS_LOG_INFO("Failed to get rif next hop for %s", interface_alias.c_str());
+                return false;
+            }
 
-        if (!remove_nhg(syncd_fg_route_entry))
-        {
-            return false;
-        }
+            if (!modifyRoutesNextHopId(gVirtualRouterId, ipPrefix, rif_next_hop_id))
+            {
+                SWSS_LOG_ERROR("Failed to modify route nexthopid to rif");
+                return false;
+            }
 
-        // remove state_db entry
-        m_stateWarmRestartRouteTable.del(ipPrefix.to_string());
-        // Clear data structures
-        syncd_fg_route_entry->syncd_fgnhg_map.clear();
-        syncd_fg_route_entry->active_nexthops.clear();
-        syncd_fg_route_entry->inactive_to_active_map.clear();
-        syncd_fg_route_entry->nhopgroup_members.clear();
+            if (!remove_nhg(syncd_fg_route_entry))
+            {
+                return false;
+            }
+            syncd_fg_route_entry->points_to_rif = true;
+            syncd_fg_route_entry->next_hop_group_id = rif_next_hop_id;
+
+            // remove state_db entry
+            m_stateWarmRestartRouteTable.del(ipPrefix.to_string());
+            // Clear data structures
+            syncd_fg_route_entry->syncd_fgnhg_map.clear();
+            syncd_fg_route_entry->active_nexthops.clear();
+            syncd_fg_route_entry->inactive_to_active_map.clear();
+            syncd_fg_route_entry->nhopgroup_members.clear();
     }
 
     return true;

@@ -146,6 +146,36 @@ def swss_get_route_entry_state(state_db,nh_memb_exp_count):
         assert memb == 0 
 
 
+def validate_asic_nhg_router_interface(asic_db, ipprefix):
+    rtbl = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTE_ENTRY")
+    riftb = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTER_INTERFACE")
+    keys = rtbl.getKeys()
+
+    found_route = False
+    for k in keys:
+        rt_key = json.loads(k)
+
+        if rt_key['dest'] == ipprefix:
+            found_route = True
+            break
+
+    assert found_route
+
+    # assert the route points to next hop group
+    (status, fvs) = rtbl.get(k)
+
+    for v in fvs:
+        if v[0] == "SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID":
+            nhgid = v[1]
+            print nhgid
+
+    assert nhgid is not None
+
+    (status, fvs) = riftb.get(nhgid)
+    assert status
+    assert fvs is not None
+ 
+
 def validate_asic_nhg_regular_ecmp(asic_db, ipprefix):
     rtbl = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTE_ENTRY")
     nhgtbl = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP_GROUP")
@@ -284,7 +314,7 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
 
     ps.set(fg_nhg_prefix, fvs)
 
-    time.sleep(1)
+    time.sleep(3)
 
     # check if route was propagated to ASIC DB
 
@@ -305,15 +335,16 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
             found_route = True
             break
 
-    # Since we didn't populate ARP yet, the route shouldn't be programmed
-    assert (found_route == False)
+    # Since we didn't populate ARP yet, route should point to RIF for kernel arp resolution to occur
+    assert (found_route == True)
+    validate_asic_nhg_router_interface(asic_db, fg_nhg_prefix)
 
     dvs.runcmd("arp -s 10.0.0.1 00:00:00:00:00:01")
     dvs.runcmd("arp -s 10.0.0.3 00:00:00:00:00:02")
     dvs.runcmd("arp -s 10.0.0.5 00:00:00:00:00:03")
     dvs.runcmd("arp -s 10.0.0.9 00:00:00:00:00:05")
     dvs.runcmd("arp -s 10.0.0.11 00:00:00:00:00:06")
-    time.sleep(1)
+    time.sleep(3)
 
     nhgid = validate_asic_nhg_fg_ecmp(adb, fg_nhg_prefix, bucket_size)
 
@@ -565,6 +596,25 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
     startup_link(dvs, db, 3)
     startup_link(dvs, db, 4)
     startup_link(dvs, db, 5)
+
+    nhgid = validate_asic_nhg_fg_ecmp(adb, fg_nhg_prefix, bucket_size)
+
+    (status, fvs) = nhgtbl.get(nhgid)
+    assert status
+
+    keys = nhg_member_tbl.getKeys()
+    assert len(keys) == bucket_size
+
+    # Obtain oids of NEXT_HOP asic entries
+    nh_oid_map = {}
+
+    for tbs in nbtbl.getKeys():
+        (status, fvs) = nbtbl.get(tbs)
+        assert status == True
+        for fv in fvs:
+            if fv[0] == "SAI_NEXT_HOP_ATTR_IP":
+                nh_oid_map[tbs] = fv[1]
+
     nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
     verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
     nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
