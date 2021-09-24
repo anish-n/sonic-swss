@@ -862,6 +862,120 @@ class TestFineGrainedNextHopGroup(object):
         remove_interface_n_fg_ecmp_config(dvs, 0, NUM_NHs+NUM_NHs_non_fgnhg, fg_nhg_name)
 
 
+    def test_fgnhg_rif_route_for_neigh(self, dvs, testlog):
+        '''
+        Test route/nh transitions to/from Fine Grained ECMP and Regular ECMP.
+        Create multiple prefixes pointing to the Fine Grained nhs and ensure 
+        fine grained ECMP ASIC objects were created for this scenario as expected.
+        '''
+        app_db = dvs.get_app_db()
+        asic_db = dvs.get_asic_db()
+        config_db = dvs.get_config_db()
+        state_db = dvs.get_state_db()
+        fvs_nul = {"NULL": "NULL"}
+        NUM_NHs = 6
+        fg_nhg_name = "fgnhg_v4"
+        fg_nhg_prefix = "2.2.2.0/24"
+        bucket_size = 60
+        ip_to_if_map = {}
+
+        fvs = {"bucket_size": str(bucket_size), "match_mode": "nexthop-based"}
+        create_entry(config_db, FG_NHG, fg_nhg_name, fvs)
+
+        for i in range(0,NUM_NHs):
+            if_name_key = "Ethernet" + str(i*4)
+            vlan_name_key = "Vlan" + str((i+1)*4)
+            ip_pref_key = vlan_name_key + "|10.0.0." + str(i*2) + "/31"
+            fvs = {"vlanid": str((i+1)*4)}
+            create_entry(config_db, VLAN_TB, vlan_name_key, fvs)
+            fvs = {"tagging_mode": "untagged"}
+            create_entry(config_db, VLAN_MEMB_TB, vlan_name_key + "|" + if_name_key, fvs)
+            create_entry(config_db, VLAN_IF_TB, vlan_name_key, fvs_nul)
+            create_entry(config_db, VLAN_IF_TB, ip_pref_key, fvs_nul)
+            dvs.runcmd("config interface startup " + if_name_key)
+            dvs.servers[i].runcmd("ip link set down dev eth0") == 0
+            dvs.servers[i].runcmd("ip link set up dev eth0") == 0
+            bank = 0
+            if i >= NUM_NHs/2:
+                bank = 1
+            fvs = {"FG_NHG": fg_nhg_name, "bank": str(bank), "link": if_name_key}
+            create_entry(config_db, FG_NHG_MEMBER, "10.0.0." + str(1 + i*2), fvs)
+            ip_to_if_map["10.0.0." + str(1 + i*2)] = vlan_name_key
+
+        # Wait for the software to receive the entries
+        time.sleep(1)
+
+        asic_nh_count = len(asic_db.get_keys(ASIC_NH_TB))
+        dvs.runcmd("arp -s 10.0.0.1 00:00:00:00:00:01")
+        dvs.runcmd("arp -s 10.0.0.3 00:00:00:00:00:02")
+        dvs.runcmd("arp -s 10.0.0.5 00:00:00:00:00:03")
+        dvs.runcmd("arp -s 10.0.0.9 00:00:00:00:00:05")
+        dvs.runcmd("arp -s 10.0.0.11 00:00:00:00:00:06")
+        asic_db.wait_for_n_keys(ASIC_NH_TB, asic_nh_count + 5)
+
+        ps = swsscommon.ProducerStateTable(app_db.db_connection, ROUTE_TB)
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7"),
+            ("ifname", "Vlan16")])
+        ps.set(fg_nhg_prefix, fvs)
+
+        # Since we didn't populate ARP for 10.0.0.7 yet, route should point to RIF for kernel arp resolution to occur
+        validate_asic_nhg_router_interface(asic_db, fg_nhg_prefix)
+
+        # Route deletion should work in this state
+        asic_rt_key = get_asic_route_key(asic_db, fg_nhg_prefix)
+        ps._del(fg_nhg_prefix)
+        asic_db.wait_for_deleted_entry(ASIC_ROUTE_TB, asic_rt_key)
+
+        # Create the route again, it should point to rif again
+        ps.set(fg_nhg_prefix, fvs)
+        validate_asic_nhg_router_interface(asic_db, fg_nhg_prefix)
+
+        # Route changed to have other nexthops which are arp resolved, it should transition to fine grained now
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"),
+            ("ifname", "Vlan16,Vlan20,Vlan24")])
+        ps.set(fg_nhg_prefix, fvs)
+
+        asic_db.wait_for_n_keys(ASIC_NHG_MEMB, bucket_size)
+        nhgid = validate_asic_nhg_fine_grained_ecmp(asic_db, fg_nhg_prefix, bucket_size)
+        nh_oid_map = get_nh_oid_map(asic_db)
+
+        # ARP is not resolved for 10.0.0.7, so fg nhg should be created without 10.0.0.7
+        nh_memb_exp_count = {"10.0.0.9":30,"10.0.0.11":30}
+        validate_fine_grained_asic_n_state_db_entries(asic_db, state_db, ip_to_if_map,
+                                fg_nhg_prefix, nh_memb_exp_count, nh_oid_map, nhgid, bucket_size)
+
+        # Resolve ARP for 10.0.0.7
+        asic_nh_count = len(asic_db.get_keys(ASIC_NH_TB))
+        dvs.runcmd("arp -s 10.0.0.7 00:00:00:00:00:04")
+        asic_db.wait_for_n_keys(ASIC_NH_TB, asic_nh_count + 1)
+        nh_oid_map = get_nh_oid_map(asic_db)
+        # Now that ARP was resolved, 10.0.0.7 should be added as a valid fg nhg member
+        nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
+        validate_fine_grained_asic_n_state_db_entries(asic_db, state_db, ip_to_if_map,
+                                fg_nhg_prefix, nh_memb_exp_count, nh_oid_map, nhgid, bucket_size)
+
+        #cleanup
+        asic_rt_key = get_asic_route_key(asic_db, fg_nhg_prefix)
+        ps._del(fg_nhg_prefix)
+        # validate routes and nhg member in asic db, route entry in state db are removed
+        asic_db.wait_for_deleted_entry(ASIC_ROUTE_TB, asic_rt_key)
+        asic_db.wait_for_n_keys(ASIC_NHG_MEMB, 0)
+        state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
+
+        for i in range(0,NUM_NHs):
+            if_name_key = "Ethernet" + str(i*4)
+            vlan_name_key = "Vlan" + str((i+1)*4)
+            ip_pref_key = vlan_name_key + "|10.0.0." + str(i*2) + "/31"
+            remove_entry(config_db, VLAN_IF_TB, ip_pref_key)
+            remove_entry(config_db, VLAN_IF_TB, vlan_name_key)
+            remove_entry(config_db, VLAN_MEMB_TB, vlan_name_key + "|" + if_name_key)
+            remove_entry(config_db, VLAN_TB, vlan_name_key)
+            dvs.runcmd("config interface shutdown " + if_name_key)
+            dvs.servers[i].runcmd("ip link set down dev eth0") == 0
+            remove_entry(config_db, "FG_NHG_MEMBER", "10.0.0." + str(1 + i*2))
+        remove_entry(config_db, "FG_NHG", fg_nhg_name)
+
+
 # Add Dummy always-pass test at end as workaroud
 # for issue when Flaky fail on final test it invokes module tear-down before retrying
 def test_nonflaky_dummy():
