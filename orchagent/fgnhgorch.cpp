@@ -782,6 +782,7 @@ bool FgNhgOrch::set_inactive_bank_to_next_available_active_bank(FGNextHopGroupEn
             syncd_fg_route_entry->active_nexthops.clear();
             syncd_fg_route_entry->inactive_to_active_map.clear();
             syncd_fg_route_entry->nhopgroup_members.clear();
+        }
     }
 
     return true;

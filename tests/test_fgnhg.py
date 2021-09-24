@@ -337,7 +337,7 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
 
     # Since we didn't populate ARP yet, route should point to RIF for kernel arp resolution to occur
     assert (found_route == True)
-    validate_asic_nhg_router_interface(asic_db, fg_nhg_prefix)
+    validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
 
     dvs.runcmd("arp -s 10.0.0.1 00:00:00:00:00:01")
     dvs.runcmd("arp -s 10.0.0.3 00:00:00:00:00:02")
@@ -591,11 +591,48 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
 
     # Bring down last link, there shouldn't be a crash or other bad orchagent state because of this
     shutdown_link(dvs, db, 5)
+    time.sleep(1)
+    validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
+
+    # Remove route, it should work with route pointing to rif
+    ps._del(fg_nhg_prefix)
+    time.sleep(1)
+
+    keys = rtbl.getKeys()
+    for k in keys:
+        rt_key = json.loads(k)
+
+        assert rt_key['dest'] != fg_nhg_prefix
+
+    keys = nhg_member_tbl.getKeys()
+    assert len(keys) == 0
+
+    stateroute_tbl = swsscommon.Table(state_db, swsscommon.STATE_FG_ROUTE_TABLE_NAME)
+    keys = stateroute_tbl.getKeys()
+    assert len(keys) == 0
+
+    # Reporgram the route, it should end up as a rif route again
+    ps.set(fg_nhg_prefix, fvs)
+    time.sleep(3)
+
+    found_route = False
+    keys = rtbl.getKeys()
+    for k in keys:
+        rt_key = json.loads(k)
+
+        if rt_key['dest'] == fg_nhg_prefix:
+            found_route = True
+            break
+
+    # Since all nhs are still down, route should point to RIF for kernel arp resolution to occur
+    assert (found_route == True)
+    validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
 
     # bring all links up one by one
     startup_link(dvs, db, 3)
     startup_link(dvs, db, 4)
     startup_link(dvs, db, 5)
+    time.sleep(1)
 
     nhgid = validate_asic_nhg_fg_ecmp(adb, fg_nhg_prefix, bucket_size)
 
