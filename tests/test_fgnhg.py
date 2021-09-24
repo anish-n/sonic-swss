@@ -351,23 +351,8 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
     fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"),
         ("ifname", "Vlan16,Vlan20,Vlan24")])
     ps.set(fg_nhg_prefix, fvs)
-    # No ASIC_DB entry we can wait for since ARP is not resolved yet,
-    # We just use sleep so that the sw receives this entry
-    time.sleep(1)
-
-    adb = swsscommon.DBConnector(1, dvs.redis_sock, 0)
-    rtbl = swsscommon.Table(adb, ASIC_ROUTE_TB)
-    keys = rtbl.getKeys()
-    found_route = False
-    for k in keys:
-        rt_key = json.loads(k)
-
-        if rt_key['dest'] == fg_nhg_prefix:
-            found_route = True
-            break
 
     # Since we didn't populate ARP yet, route should point to RIF for kernel arp resolution to occur
-    assert (found_route == True)
     validate_asic_nhg_router_interface(asic_db, fg_nhg_prefix)
 
     asic_nh_count = len(asic_db.get_keys(ASIC_NH_TB))
@@ -507,12 +492,26 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
 
     # Bring down last link, there shouldn't be a crash or other bad orchagent state because of this
     shutdown_link(dvs, app_db, 5)
-    # Nothing to check for in this case, sleep 1s for the shutdown to reach sw
-    time.sleep(1)
+
+    # Route transitions to rif route because no nhs are available
+    validate_asic_nhg_router_interface(asic_db, fg_nhg_prefix)
+    asic_db.wait_for_n_keys(ASIC_NHG_MEMB, 0)
+    state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
+
+    # Route removal should work despite pointing to rif
+    asic_rt_key = get_asic_route_key(asic_db, fg_nhg_prefix)
+    ps._del(fg_nhg_prefix)
+    asic_db.wait_for_deleted_entry(ASIC_ROUTE_TB, asic_rt_key)
+
+    # Create the route again, it should point to rif
+    ps.set(fg_nhg_prefix, fvs)
+    validate_asic_nhg_router_interface(asic_db, fg_nhg_prefix)
 
     # bring all links up one by one
     startup_link(dvs, app_db, 3)
     startup_link(dvs, app_db, 4)
+
+    # Route transitions to Fine Grained nhs from rif nexthop
     asic_db.wait_for_n_keys(ASIC_NHG_MEMB, bucket_size)
     nhgid = validate_asic_nhg_fine_grained_ecmp(asic_db, fg_nhg_prefix, bucket_size)
     nh_oid_map = get_nh_oid_map(asic_db)
