@@ -934,7 +934,6 @@ class TestFineGrainedNextHopGroup(object):
         fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"),
             ("ifname", "Vlan16,Vlan20,Vlan24")])
         ps.set(fg_nhg_prefix, fvs)
-
         asic_db.wait_for_n_keys(ASIC_NHG_MEMB, bucket_size)
         nhgid = validate_asic_nhg_fine_grained_ecmp(asic_db, fg_nhg_prefix, bucket_size)
         nh_oid_map = get_nh_oid_map(asic_db)
@@ -943,6 +942,21 @@ class TestFineGrainedNextHopGroup(object):
         nh_memb_exp_count = {"10.0.0.9":30,"10.0.0.11":30}
         validate_fine_grained_asic_n_state_db_entries(asic_db, state_db, ip_to_if_map,
                                 fg_nhg_prefix, nh_memb_exp_count, nh_oid_map, nhgid, bucket_size)
+
+        # Change route to have only 10.0.0.7 nh which is still unresolved, it should start pointing to rif now
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7"),
+            ("ifname", "Vlan16")])
+        ps.set(fg_nhg_prefix, fvs)
+        asic_db.wait_for_n_keys(ASIC_NHG_MEMB, 0)
+        state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
+        validate_asic_nhg_router_interface(asic_db, fg_nhg_prefix)
+
+        # Change route to have the other resolved neighbors once again
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"),
+            ("ifname", "Vlan16,Vlan20,Vlan24")])
+        ps.set(fg_nhg_prefix, fvs)
+        asic_db.wait_for_n_keys(ASIC_NHG_MEMB, bucket_size)
+        nhgid = validate_asic_nhg_fine_grained_ecmp(asic_db, fg_nhg_prefix, bucket_size)
 
         # Resolve ARP for 10.0.0.7
         asic_nh_count = len(asic_db.get_keys(ASIC_NH_TB))
@@ -954,14 +968,13 @@ class TestFineGrainedNextHopGroup(object):
         validate_fine_grained_asic_n_state_db_entries(asic_db, state_db, ip_to_if_map,
                                 fg_nhg_prefix, nh_memb_exp_count, nh_oid_map, nhgid, bucket_size)
 
-        #cleanup
+        # cleanup
         asic_rt_key = get_asic_route_key(asic_db, fg_nhg_prefix)
         ps._del(fg_nhg_prefix)
         # validate routes and nhg member in asic db, route entry in state db are removed
         asic_db.wait_for_deleted_entry(ASIC_ROUTE_TB, asic_rt_key)
         asic_db.wait_for_n_keys(ASIC_NHG_MEMB, 0)
         state_db.wait_for_n_keys("FG_ROUTE_TABLE", 0)
-
         for i in range(0,NUM_NHs):
             if_name_key = "Ethernet" + str(i*4)
             vlan_name_key = "Vlan" + str((i+1)*4)
