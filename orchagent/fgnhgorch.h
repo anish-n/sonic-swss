@@ -29,6 +29,7 @@ struct FGNextHopGroupEntry
     BankFGNextHopGroupMap   syncd_fgnhg_map;        // Map of (bank) -> (nexthops) -> (index in nhopgroup_members)
     NextHopGroupKey         nhg_key;                // Full next hop group key
     InactiveBankMapsToBank  inactive_to_active_map; // Maps an inactive bank to an active one in terms of hash bkts
+    bool                    points_to_rif;          // Flag to identify that route is currently pointing to a rif
 };
 
 struct FGNextHopInfo
@@ -103,7 +104,7 @@ public:
     bool syncdContainsFgNhg(sai_object_id_t vrf_id, const IpPrefix &ipPrefix);
     bool validNextHopInNextHopGroup(const NextHopKey&);
     bool invalidNextHopInNextHopGroup(const NextHopKey&);
-    bool setFgNhg(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const NextHopGroupKey &nextHops, sai_object_id_t &next_hop_id, bool &prevNhgWasFineGrained);
+    bool setFgNhg(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const NextHopGroupKey &nextHops, sai_object_id_t &next_hop_id, bool &isNextHopIdChanged);
     bool removeFgNhg(sai_object_id_t vrf_id, const IpPrefix &ipPrefix);
 
     // warm reboot support
@@ -126,6 +127,9 @@ private:
     // < ip_prefix, < HashBuckets, nh_ip>>
     WarmBootRecoveryMap m_recoveryMap;
 
+    bool createFgNhg(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, FGNextHopGroupEntry &syncd_fg_route_entry,
+                    FgNhgEntry *fgNhgEntry, std::vector<Bank_Member_Changes> &bank_member_changes, 
+                    std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set);
     bool set_new_nhg_members(FGNextHopGroupEntry &syncd_fg_route_entry, FgNhgEntry *fgNhgEntry,
                     std::vector<Bank_Member_Changes> &bank_member_changes, 
                     std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
@@ -142,6 +146,7 @@ private:
                         uint32_t bank, std::vector<Bank_Member_Changes> bank_member_changes,
                         std::map<NextHopKey,sai_object_id_t> &nhopgroup_members_set, const IpPrefix&);
     bool remove_nhg(FGNextHopGroupEntry *syncd_fg_route_entry);
+    bool modifyRoutesNextHopId(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, sai_object_id_t next_hop_id);
     void set_state_db_route_entry(const IpPrefix&, uint32_t index, NextHopKey nextHop);
     void remove_state_db_route_entry(const std::string& name);
     bool write_hash_bucket_change_to_sai(FGNextHopGroupEntry *syncd_fg_route_entry, uint32_t index, sai_object_id_t nh_oid,

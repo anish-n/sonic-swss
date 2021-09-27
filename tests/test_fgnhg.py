@@ -146,6 +146,36 @@ def swss_get_route_entry_state(state_db,nh_memb_exp_count):
         assert memb == 0 
 
 
+def validate_asic_nhg_router_interface(asic_db, ipprefix):
+    rtbl = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTE_ENTRY")
+    riftb = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTER_INTERFACE")
+    keys = rtbl.getKeys()
+
+    found_route = False
+    for k in keys:
+        rt_key = json.loads(k)
+
+        if rt_key['dest'] == ipprefix:
+            found_route = True
+            break
+
+    assert found_route
+
+    # assert the route points to next hop group
+    (status, fvs) = rtbl.get(k)
+
+    for v in fvs:
+        if v[0] == "SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID":
+            nhgid = v[1]
+            print nhgid
+
+    assert nhgid is not None
+
+    (status, fvs) = riftb.get(nhgid)
+    assert status
+    assert fvs is not None
+ 
+
 def validate_asic_nhg_regular_ecmp(asic_db, ipprefix):
     rtbl = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTE_ENTRY")
     nhgtbl = swsscommon.Table(asic_db, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP_GROUP")
@@ -284,7 +314,7 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
 
     ps.set(fg_nhg_prefix, fvs)
 
-    time.sleep(1)
+    time.sleep(3)
 
     # check if route was propagated to ASIC DB
 
@@ -305,15 +335,16 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
             found_route = True
             break
 
-    # Since we didn't populate ARP yet, the route shouldn't be programmed
-    assert (found_route == False)
+    # Since we didn't populate ARP yet, route should point to RIF for kernel arp resolution to occur
+    assert (found_route == True)
+    validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
 
     dvs.runcmd("arp -s 10.0.0.1 00:00:00:00:00:01")
     dvs.runcmd("arp -s 10.0.0.3 00:00:00:00:00:02")
     dvs.runcmd("arp -s 10.0.0.5 00:00:00:00:00:03")
     dvs.runcmd("arp -s 10.0.0.9 00:00:00:00:00:05")
     dvs.runcmd("arp -s 10.0.0.11 00:00:00:00:00:06")
-    time.sleep(1)
+    time.sleep(3)
 
     nhgid = validate_asic_nhg_fg_ecmp(adb, fg_nhg_prefix, bucket_size)
 
@@ -560,11 +591,67 @@ def fine_grained_ecmp_base_test(dvs, match_mode):
 
     # Bring down last link, there shouldn't be a crash or other bad orchagent state because of this
     shutdown_link(dvs, db, 5)
+    time.sleep(1)
+    validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
+
+    # Remove route, it should work with route pointing to rif
+    ps._del(fg_nhg_prefix)
+    time.sleep(1)
+
+    keys = rtbl.getKeys()
+    for k in keys:
+        rt_key = json.loads(k)
+
+        assert rt_key['dest'] != fg_nhg_prefix
+
+    keys = nhg_member_tbl.getKeys()
+    assert len(keys) == 0
+
+    stateroute_tbl = swsscommon.Table(state_db, swsscommon.STATE_FG_ROUTE_TABLE_NAME)
+    keys = stateroute_tbl.getKeys()
+    assert len(keys) == 0
+
+    # Reporgram the route, it should end up as a rif route again
+    ps.set(fg_nhg_prefix, fvs)
+    time.sleep(3)
+
+    found_route = False
+    keys = rtbl.getKeys()
+    for k in keys:
+        rt_key = json.loads(k)
+
+        if rt_key['dest'] == fg_nhg_prefix:
+            found_route = True
+            break
+
+    # Since all nhs are still down, route should point to RIF for kernel arp resolution to occur
+    assert (found_route == True)
+    validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
 
     # bring all links up one by one
     startup_link(dvs, db, 3)
     startup_link(dvs, db, 4)
     startup_link(dvs, db, 5)
+    time.sleep(1)
+
+    nhgid = validate_asic_nhg_fg_ecmp(adb, fg_nhg_prefix, bucket_size)
+
+    (status, fvs) = nhgtbl.get(nhgid)
+    assert status
+
+    keys = nhg_member_tbl.getKeys()
+    assert len(keys) == bucket_size
+
+    # Obtain oids of NEXT_HOP asic entries
+    nh_oid_map = {}
+
+    for tbs in nbtbl.getKeys():
+        (status, fvs) = nbtbl.get(tbs)
+        assert status == True
+        for fv in fvs:
+            if fv[0] == "SAI_NEXT_HOP_ATTR_IP":
+                nh_oid_map[tbs] = fv[1]
+
     nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
     verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
     nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
@@ -1141,3 +1228,233 @@ class TestFineGrainedNextHopGroup(object):
             "FG_NHG", 
             fg_nhg_name,
         )
+
+
+    def test_fgnhg_rif_route_for_neigh(self, dvs, testlog):
+        config_db = swsscommon.DBConnector(swsscommon.CONFIG_DB, dvs.redis_sock, 0)
+        fg_nhg_name = "fgnhg_v4"
+        fg_nhg_prefix = "2.2.2.0/24"
+        bucket_size = 60
+        fvs_nul = [("NULL", "NULL")]
+        NUM_NHs = 6
+        ip_to_if_map = {}
+
+        create_entry_tbl(
+            config_db,
+            "FG_NHG", '|', fg_nhg_name,
+            [
+                ("bucket_size", str(bucket_size)),
+                ("match_mode", "nexthop-based"),
+            ],
+        )
+
+        for i in range(0,NUM_NHs):
+            if_name_key = "Ethernet" + str(i*4)
+            vlan_name_key = "Vlan" + str((i+1)*4)
+            ip_pref_key = vlan_name_key + "|10.0.0." + str(i*2) + "/31"
+            fvs = [("vlanid", str((i+1)*4))]
+            create_entry_tbl(config_db, VLAN_TB , '|' , vlan_name_key, fvs)
+            fvs = [("tagging_mode", "untagged")]
+            create_entry_tbl(config_db, VLAN_MEMB_TB , '|' , vlan_name_key + "|" + if_name_key, fvs)
+            create_entry_tbl(config_db, VLAN_IF_TB , '|' , vlan_name_key, fvs_nul)
+            create_entry_tbl(config_db, VLAN_IF_TB , '|' , ip_pref_key, fvs_nul)
+            dvs.runcmd("config interface startup " + if_name_key)
+            dvs.servers[i].runcmd("ip link set down dev eth0") == 0
+            dvs.servers[i].runcmd("ip link set up dev eth0") == 0
+            bank = 0
+            if i >= NUM_NHs/2:
+                bank = 1
+            fvs = [("FG_NHG", fg_nhg_name), ("bank", str(bank)), ("link", if_name_key)]
+            create_entry_tbl(config_db, FG_NHG_MEMBER , '|' , "10.0.0." + str(1 + i*2), fvs)
+            ip_to_if_map["10.0.0." + str(1 + i*2)] = vlan_name_key
+        
+        time.sleep(3)
+        dvs.runcmd("arp -s 10.0.0.1 00:00:00:00:00:01")
+        dvs.runcmd("arp -s 10.0.0.3 00:00:00:00:00:02")
+        dvs.runcmd("arp -s 10.0.0.5 00:00:00:00:00:03")
+        dvs.runcmd("arp -s 10.0.0.9 00:00:00:00:00:05")
+        dvs.runcmd("arp -s 10.0.0.11 00:00:00:00:00:06")
+
+        #"""
+
+        db = swsscommon.DBConnector(0, dvs.redis_sock, 0)
+        state_db = swsscommon.DBConnector(swsscommon.STATE_DB, dvs.redis_sock, 0)
+        ps = swsscommon.ProducerStateTable(db, "ROUTE_TABLE")
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7"), ("ifname","Vlan16")])
+        ps.set(fg_nhg_prefix, fvs)
+
+        time.sleep(3)
+
+        # check if route was propagated to ASIC DB
+
+        adb = swsscommon.DBConnector(1, dvs.redis_sock, 0)
+
+        rtbl = swsscommon.Table(adb, "ASIC_STATE:SAI_OBJECT_TYPE_ROUTE_ENTRY")
+        nhgtbl = swsscommon.Table(adb, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP_GROUP")
+        nhg_member_tbl = swsscommon.Table(adb, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP_GROUP_MEMBER")
+        nbtbl = swsscommon.Table(adb, "ASIC_STATE:SAI_OBJECT_TYPE_NEXT_HOP")
+
+        keys = rtbl.getKeys()
+
+        found_route = False
+        for k in keys:
+            rt_key = json.loads(k)
+
+            if rt_key['dest'] == fg_nhg_prefix:
+                found_route = True
+                break
+
+        # Since we didn't populate ARP yet, route should point to RIF for kernel arp resolution to occur
+        assert (found_route == True)
+        validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
+
+        # Remove route, it should work with route pointing to rif
+        ps._del(fg_nhg_prefix)
+        time.sleep(1)
+
+        keys = rtbl.getKeys()
+        for k in keys:
+            rt_key = json.loads(k)
+
+            assert rt_key['dest'] != fg_nhg_prefix
+
+        keys = nhg_member_tbl.getKeys()
+        assert len(keys) == 0
+
+        stateroute_tbl = swsscommon.Table(state_db, swsscommon.STATE_FG_ROUTE_TABLE_NAME)
+        keys = stateroute_tbl.getKeys()
+        assert len(keys) == 0
+
+        # Reporgram the route, it should end up as a rif route again
+        ps.set(fg_nhg_prefix, fvs)
+        time.sleep(1)
+
+        found_route = False
+        keys = rtbl.getKeys()
+        for k in keys:
+            rt_key = json.loads(k)
+
+            if rt_key['dest'] == fg_nhg_prefix:
+                found_route = True
+                break
+
+        # Since all nhs are still down, route should point to RIF for kernel arp resolution to occur
+        assert (found_route == True)
+        validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
+
+        # Modify route with other nhs which are resolved
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname","Vlan16,Vlan20,Vlan24")])
+        ps.set(fg_nhg_prefix, fvs)
+        time.sleep(1)
+
+        nhgid = validate_asic_nhg_fg_ecmp(adb, fg_nhg_prefix, bucket_size)
+
+        (status, fvs) = nhgtbl.get(nhgid)
+        assert status
+
+        keys = nhg_member_tbl.getKeys()
+        assert len(keys) == bucket_size
+
+        # Obtain oids of NEXT_HOP asic entries
+        nh_oid_map = {}
+
+        for tbs in nbtbl.getKeys():
+            (status, fvs) = nbtbl.get(tbs)
+            assert status == True
+            for fv in fvs:
+                if fv[0] == "SAI_NEXT_HOP_ATTR_IP":
+                    nh_oid_map[tbs] = fv[1]
+
+        # ARP is not resolved for 10.0.0.7, so fg nhg should be created with 10.0.0.7
+        nh_memb_exp_count = {"10.0.0.9":30,"10.0.0.11":30}
+        verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
+        nh__exp_count = {"10.0.0.9@Vlan20":30,"10.0.0.11@Vlan24":30}
+        swss_get_route_entry_state(state_db, nh__exp_count)
+
+
+        # Modify route with unresolved nh again, route should point to rif again
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7"), ("ifname","Vlan16")])
+        ps.set(fg_nhg_prefix, fvs)
+        time.sleep(1)
+
+        validate_asic_nhg_router_interface(adb, fg_nhg_prefix)
+        keys = nhg_member_tbl.getKeys()
+        assert len(keys) == 0
+        stateroute_tbl = swsscommon.Table(state_db, swsscommon.STATE_FG_ROUTE_TABLE_NAME)
+        keys = stateroute_tbl.getKeys()
+        assert len(keys) == 0
+
+        # Reprogram neigh resolved route and validate fg ecmp
+        fvs = swsscommon.FieldValuePairs([("nexthop","10.0.0.7,10.0.0.9,10.0.0.11"), ("ifname","Vlan16,Vlan20,Vlan24")])
+        ps.set(fg_nhg_prefix, fvs)
+        time.sleep(1)
+        # Obtain oids of NEXT_HOP asic entries
+        nhgid = validate_asic_nhg_fg_ecmp(adb, fg_nhg_prefix, bucket_size)
+        nh_oid_map = {}
+        for tbs in nbtbl.getKeys():
+            (status, fvs) = nbtbl.get(tbs)
+            assert status == True
+            for fv in fvs:
+                if fv[0] == "SAI_NEXT_HOP_ATTR_IP":
+                    nh_oid_map[tbs] = fv[1]
+
+        # ARP is not resolved for 10.0.0.7, so fg nhg should be created with 10.0.0.7
+        nh_memb_exp_count = {"10.0.0.9":30,"10.0.0.11":30}
+        verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
+        nh__exp_count = {"10.0.0.9@Vlan20":30,"10.0.0.11@Vlan24":30}
+        swss_get_route_entry_state(state_db, nh__exp_count)
+
+        # Resolve ARP now and validate
+        dvs.runcmd("arp -s 10.0.0.7 00:00:00:00:00:04")
+        time.sleep(1)
+
+        for tbs in nbtbl.getKeys():
+            (status, fvs) = nbtbl.get(tbs)
+            assert status == True
+            for fv in fvs:
+                if fv[0] == "SAI_NEXT_HOP_ATTR_IP":
+                    nh_oid_map[tbs] = fv[1]
+
+
+        # Now that ARP was resolved, 10.0.0.7 should be added as a valid fg nhg member
+        nh_memb_exp_count = {"10.0.0.7":20,"10.0.0.9":20,"10.0.0.11":20}
+        verify_programmed_nh_membs(adb,nh_memb_exp_count,nh_oid_map,nhgid,bucket_size)
+        nh__exp_count = {"10.0.0.7@Vlan16":20, "10.0.0.9@Vlan20":20,"10.0.0.11@Vlan24":20}
+        swss_get_route_entry_state(state_db, nh__exp_count)
+
+        # Remove route
+        ps._del(fg_nhg_prefix)
+        time.sleep(1)
+
+        keys = rtbl.getKeys()
+        for k in keys:
+            rt_key = json.loads(k)
+
+            assert rt_key['dest'] != fg_nhg_prefix
+
+        keys = nhg_member_tbl.getKeys()
+        assert len(keys) == 0
+        
+        stateroute_tbl = swsscommon.Table(state_db, swsscommon.STATE_FG_ROUTE_TABLE_NAME)
+        keys = stateroute_tbl.getKeys()
+        assert len(keys) == 0
+        
+        for i in range(0,NUM_NHs):
+            if_name_key = "Ethernet" + str(i*4)
+            vlan_name_key = "Vlan" + str((i+1)*4)
+            ip_pref_key = vlan_name_key + "|10.0.0." + str(i*2) + "/31"
+            remove_entry_tbl(config_db, VLAN_MEMB_TB , vlan_name_key + "|" + if_name_key)
+            remove_entry_tbl(config_db, VLAN_IF_TB , vlan_name_key)
+            remove_entry_tbl(config_db, VLAN_IF_TB , ip_pref_key)
+            remove_entry_tbl(config_db, VLAN_TB , vlan_name_key)
+            dvs.runcmd("config interface shutdown " + if_name_key)
+            dvs.servers[i].runcmd("ip link set down dev eth0") == 0
+            remove_entry_tbl(config_db, FG_NHG_MEMBER , "10.0.0." + str(1 + i*2))
+
+        # remove group should succeeds
+        remove_entry_tbl(
+            config_db,
+            "FG_NHG", 
+            fg_nhg_name,
+        )
+

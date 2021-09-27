@@ -953,7 +953,7 @@ bool RouteOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
     sai_object_id_t next_hop_id;
 
     bool curNhgIsFineGrained = false;
-    bool prevNhgWasFineGrained = false;
+    bool isNextHopIdChanged = false;
 
     if (m_syncdRoutes.find(vrf_id) == m_syncdRoutes.end())
     {
@@ -971,9 +971,9 @@ bool RouteOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
         /* We get 3 return values from setFgNhg:
          * 1. success/failure: on addition/modification of nexthop group/members
          * 2. next_hop_id: passed as a param to fn, used for sai route creation
-         * 3. prevNhgWasFineGrained: passed as a param to fn, used to determine transitions
+         * 3. isNextHopIdChanged: passed as a param to fn, used to determine transitions
          * between regular and FG ECMP, this is an optimization to prevent multiple lookups */
-        if (!m_fgNhgOrch->setFgNhg(vrf_id, ipPrefix, nextHops, next_hop_id, prevNhgWasFineGrained))
+        if (!m_fgNhgOrch->setFgNhg(vrf_id, ipPrefix, nextHops, next_hop_id, isNextHopIdChanged))
         {
             return false;
         }
@@ -1119,7 +1119,7 @@ bool RouteOrch::addRoute(sai_object_id_t vrf_id, const IpPrefix &ipPrefix, const
 
         if (curNhgIsFineGrained)
         {
-            if (!prevNhgWasFineGrained)
+            if (isNextHopIdChanged)
             {
                 route_attr.id = SAI_ROUTE_ENTRY_ATTR_NEXT_HOP_ID;
                 route_attr.value.oid = next_hop_id;
